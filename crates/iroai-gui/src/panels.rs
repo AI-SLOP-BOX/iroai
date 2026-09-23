@@ -8,81 +8,104 @@ use iroai_core::{
 pub struct Panels;
 
 impl Panels {
-    /// 左ツールバー（Photoshop準拠ツールセット）
+    /// 左ツールバー（Photoshop準拠の2列コンパクト・アイコンパレット）
     pub fn render_toolbar(ui: &mut Ui, brush: &mut Brush) {
         ui.vertical(|ui| {
-            ui.heading("Tools");
-            ui.separator();
-
+            ui.add_space(4.0);
             let tools = [
-                (BrushTool::Brush, "🖌 Brush"),
-                (BrushTool::Eraser, "🧹 Eraser"),
-                (BrushTool::CloneStamp, "📑 Clone Stamp"),
-                (BrushTool::Blur, "💧 Blur Tool"),
-                (BrushTool::Sharpen, "🔺 Sharpen Tool"),
-                (BrushTool::Dodge, "☀️ Dodge Tool"),
-                (BrushTool::Burn, "🌑 Burn Tool"),
-                (BrushTool::Sponge, "🧽 Sponge Tool"),
-                (BrushTool::Eyedropper, "🔍 Eyedropper"),
-                (BrushTool::Bucket, "🪣 Paint Bucket"),
-                (BrushTool::RectSelect, "🔲 Rect Marquee"),
-                (BrushTool::EllipseSelect, "⚪ Ellipse Marquee"),
+                (BrushTool::Brush, "🖌", "Brush Tool (B)"),
+                (BrushTool::Eraser, "🧹", "Eraser Tool (E)"),
+                (BrushTool::CloneStamp, "📑", "Clone Stamp (S)"),
+                (BrushTool::Blur, "💧", "Blur Tool"),
+                (BrushTool::Sharpen, "🔺", "Sharpen Tool"),
+                (BrushTool::Dodge, "☀️", "Dodge Tool (O)"),
+                (BrushTool::Burn, "🌑", "Burn Tool"),
+                (BrushTool::Sponge, "🧽", "Sponge Tool"),
+                (BrushTool::Eyedropper, "🔍", "Eyedropper (I)"),
+                (BrushTool::Bucket, "🪣", "Paint Bucket (G)"),
+                (BrushTool::RectSelect, "🔲", "Rect Marquee (M)"),
+                (BrushTool::EllipseSelect, "⚪", "Ellipse Marquee"),
             ];
 
-            for (tool, label) in tools {
-                let is_selected = brush.tool == tool;
-                if ui.selectable_label(is_selected, label).clicked() {
-                    brush.tool = tool;
+            egui::Grid::new("tool_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+                for (i, (tool, icon, tip)) in tools.iter().enumerate() {
+                    let is_selected = brush.tool == *tool;
+                    let btn = egui::Button::new(*icon).min_size(Vec2::new(26.0, 26.0));
+                    let resp = if is_selected {
+                        ui.add(btn.fill(Color32::from_rgb(38, 79, 120)))
+                    } else {
+                        ui.add(btn)
+                    };
+                    if resp.on_hover_text(*tip).clicked() {
+                        brush.tool = *tool;
+                    }
+                    if (i + 1) % 2 == 0 {
+                        ui.end_row();
+                    }
                 }
-            }
+            });
+            ui.add_space(8.0);
+            ui.separator();
+
+            // Color Swatch
+            let (rect_fg, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect_fg, 2.0, Color32::from_rgba_unmultiplied(brush.color.r, brush.color.g, brush.color.b, brush.color.a));
+            ui.painter().rect_stroke(rect_fg, 2.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 80)));
         });
     }
 
-    /// ブラシ設定・写真補正パネル
-    pub fn render_brush_and_photo_settings(
+    /// ブラシ設定パネル
+    pub fn render_brush_settings(ui: &mut Ui, brush: &mut Brush) {
+        ui.vertical(|ui| {
+            ui.add_space(4.0);
+            ui.heading("Brush Dynamics");
+            ui.separator();
+            ui.add(egui::Slider::new(&mut brush.size, 1.0..=200.0).text("Size"));
+            ui.add(egui::Slider::new(&mut brush.hardness, 0.0..=1.0).text("Hardness"));
+            ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacity"));
+            ui.add(egui::Slider::new(&mut brush.flow, 0.0..=1.0).text("Flow"));
+            ui.add(egui::Slider::new(&mut brush.spacing, 0.01..=1.0).text("Spacing"));
+            ui.checkbox(&mut brush.pressure_size, "Pressure Size");
+            ui.checkbox(&mut brush.pressure_opacity, "Pressure Opacity");
+        });
+    }
+
+    /// 写真調整パネル (Photoshop/Lightroom風 フラットスライダー)
+    pub fn render_photo_settings(
         ui: &mut Ui,
-        brush: &mut Brush,
         photo_adj: &mut PhotoAdjustments,
         doc: &mut Document,
     ) {
         ui.vertical(|ui| {
-            ui.collapsing("🖌 Brush Dynamics", |ui| {
-                ui.add(egui::Slider::new(&mut brush.size, 1.0..=200.0).text("Size"));
-                ui.add(egui::Slider::new(&mut brush.hardness, 0.0..=1.0).text("Hardness"));
-                ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacity"));
-                ui.checkbox(&mut brush.pressure_size, "Pressure Size");
-                ui.checkbox(&mut brush.pressure_opacity, "Pressure Opacity");
-            });
-
+            ui.add_space(4.0);
+            ui.heading("Adjustments");
             ui.separator();
 
-            ui.collapsing("📷 Photo Adjustments (Live)", |ui| {
-                let mut changed = false;
+            let mut changed = false;
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.exposure, -5.0..=5.0).text("Exposure (EV)")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.temperature, -100.0..=100.0).text("Color Temp")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.tint, -100.0..=100.0).text("Tint")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.highlights, -100.0..=100.0).text("Highlights")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.shadows, -100.0..=100.0).text("Shadows")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.whites, -100.0..=100.0).text("Whites")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.blacks, -100.0..=100.0).text("Blacks")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.vibrance, -100.0..=100.0).text("Vibrance")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.saturation, -100.0..=100.0).text("Saturation")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.clarity, -100.0..=100.0).text("Clarity")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.sharpness, 0.0..=100.0).text("Sharpness")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.noise_reduction, 0.0..=100.0).text("Noise Red.")).changed();
+            changed |= ui.add(egui::Slider::new(&mut photo_adj.vignette, -100.0..=100.0).text("Vignette")).changed();
 
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.exposure, -5.0..=5.0).text("Exposure (EV)")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.temperature, -100.0..=100.0).text("Color Temp")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.tint, -100.0..=100.0).text("Tint")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.highlights, -100.0..=100.0).text("Highlights")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.shadows, -100.0..=100.0).text("Shadows")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.whites, -100.0..=100.0).text("Whites")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.blacks, -100.0..=100.0).text("Blacks")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.vibrance, -100.0..=100.0).text("Vibrance")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.saturation, -100.0..=100.0).text("Saturation")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.clarity, -100.0..=100.0).text("Clarity")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.sharpness, 0.0..=100.0).text("Sharpness")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.noise_reduction, 0.0..=100.0).text("Noise Red.")).changed();
-                changed |= ui.add(egui::Slider::new(&mut photo_adj.vignette, -100.0..=100.0).text("Vignette")).changed();
-
-                if ui.button("Apply to Active Layer").clicked() || changed {
-                    if let Some(layer) = doc.active_layer_mut() {
-                        PhotoProcessor::apply_photo_adjustments(&mut layer.buffer, photo_adj);
-                    }
+            ui.add_space(8.0);
+            if ui.button("Apply to Active Layer").clicked() || changed {
+                if let Some(layer) = doc.active_layer_mut() {
+                    PhotoProcessor::apply_photo_adjustments(&mut layer.buffer, photo_adj);
                 }
+            }
 
-                if ui.button("Reset Photo Adjustments").clicked() {
-                    *photo_adj = PhotoAdjustments::default();
-                }
-            });
+            if ui.button("Reset All Sliders").clicked() {
+                *photo_adj = PhotoAdjustments::default();
+            }
         });
     }
 

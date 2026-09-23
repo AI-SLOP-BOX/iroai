@@ -8,6 +8,14 @@ use crate::canvas::{CanvasState, CanvasWidget};
 use crate::panels::Panels;
 use crate::tablet_layout::TabletLayout;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightPanelTab {
+    Layers,
+    Adjust,
+    Brush,
+    Info,
+}
+
 pub struct IroaiApp {
     pub documents: Vec<Document>,
     pub active_doc_index: usize,
@@ -19,10 +27,12 @@ pub struct IroaiApp {
     pub is_tablet_mode: bool,
     pub status_message: String,
     pub layer_search_query: String,
+    pub right_panel_tab: RightPanelTab,
 }
 
 impl IroaiApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::theme::apply_pro_theme(&cc.egui_ctx);
         let doc = Document::new(800, 600, "Untitled-1");
         let mut moufu = MoufuClient::new();
         let _ = moufu.try_connect();
@@ -39,6 +49,7 @@ impl IroaiApp {
             is_tablet_mode: false,
             status_message: "Ready".to_string(),
             layer_search_query: String::new(),
+            right_panel_tab: RightPanelTab::Layers,
         }
     }
 
@@ -254,20 +265,38 @@ impl eframe::App for IroaiApp {
             });
         });
 
-        // 5. 左ツールバー
-        egui::SidePanel::left("left_tools").default_width(110.0).show(ctx, |ui| {
+        // 5. 左ツールバー (2列コンパクトパレット: 68px幅)
+        egui::SidePanel::left("left_tools").exact_width(68.0).resizable(false).show(ctx, |ui| {
             Panels::render_toolbar(ui, &mut self.brush);
         });
 
-        // 6. 右パネル (ブラシ・写真補正・ヒストグラム・レイヤー)
-        egui::SidePanel::right("right_panels").default_width(280.0).show(ctx, |ui| {
+        // 6. 右パネル (Photoshop/Affinity風 タブ式ドック)
+        egui::SidePanel::right("right_panels").default_width(300.0).show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Layers, "Layers");
+                ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Adjust, "Adjust");
+                ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Brush, "Brush");
+                ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Info, "Info");
+            });
+            ui.separator();
+
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let doc = &mut self.documents[self.active_doc_index];
-                Panels::render_brush_and_photo_settings(ui, &mut self.brush, &mut self.photo_adj, doc);
-                ui.separator();
-                Panels::render_histogram_and_info(ui, doc, self.canvas_state.hovered_pixel_info);
-                ui.separator();
-                Panels::render_layer_panel(ui, doc, &mut self.layer_search_query);
+                match self.right_panel_tab {
+                    RightPanelTab::Layers => {
+                        Panels::render_layer_panel(ui, doc, &mut self.layer_search_query);
+                    }
+                    RightPanelTab::Adjust => {
+                        Panels::render_photo_settings(ui, &mut self.photo_adj, doc);
+                    }
+                    RightPanelTab::Brush => {
+                        Panels::render_brush_settings(ui, &mut self.brush);
+                    }
+                    RightPanelTab::Info => {
+                        Panels::render_histogram_and_info(ui, doc, self.canvas_state.hovered_pixel_info);
+                    }
+                }
             });
         });
 

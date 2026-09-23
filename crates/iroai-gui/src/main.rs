@@ -2,6 +2,7 @@ pub mod app;
 pub mod canvas;
 pub mod panels;
 pub mod tablet_layout;
+pub mod theme;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {

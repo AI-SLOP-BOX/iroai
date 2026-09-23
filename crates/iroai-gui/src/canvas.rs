@@ -81,16 +81,45 @@ impl CanvasWidget {
 
         let painter = ui.painter().with_clip_rect(rect);
 
-        // 背景
-        painter.rect_filled(canvas_rect, 0.0, Color32::from_rgb(200, 200, 200));
+        // 1. Dark viewport canvas backdrop
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(24, 24, 24));
 
-        // 画像の描画
+        // 2. Subtle drop shadow behind canvas
+        let shadow_rect = canvas_rect.expand(4.0).translate(Vec2::new(0.0, 2.0));
+        painter.rect_filled(shadow_rect, 2.0, Color32::from_black_alpha(120));
+
+        // 3. Studio Checkerboard (Transparency grid)
+        painter.rect_filled(canvas_rect, 0.0, Color32::from_rgb(240, 240, 240));
+        let grid_size = 12.0;
+        let start_x = canvas_rect.min.x;
+        let start_y = canvas_rect.min.y;
+        let cols = (canvas_rect.width() / grid_size).ceil() as usize;
+        let rows = (canvas_rect.height() / grid_size).ceil() as usize;
+        for r in 0..rows {
+            for c in 0..cols {
+                if (r + c) % 2 == 1 {
+                    let rx = (start_x + c as f32 * grid_size).min(canvas_rect.max.x);
+                    let ry = (start_y + r as f32 * grid_size).min(canvas_rect.max.y);
+                    let rw = grid_size.min(canvas_rect.max.x - rx);
+                    let rh = grid_size.min(canvas_rect.max.y - ry);
+                    if rw > 0.0 && rh > 0.0 {
+                        let cell_rect = Rect::from_min_size(egui::pos2(rx, ry), Vec2::new(rw, rh));
+                        painter.rect_filled(cell_rect, 0.0, Color32::from_rgb(205, 205, 205));
+                    }
+                }
+            }
+        }
+
+        // 4. 画像の描画
         painter.image(
             texture.id(),
             canvas_rect,
             Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
+
+        // 5. 1px hairline canvas boundary border
+        painter.rect_stroke(canvas_rect, 0.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 60)));
 
         // 5. ポインター入力・描画処理
         if let Some(pos) = response.hover_pos() {
