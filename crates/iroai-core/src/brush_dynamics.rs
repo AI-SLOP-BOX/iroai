@@ -148,3 +148,113 @@ pub fn interpolate_catmull_rom(
 
     points
 }
+
+/// Wet Media mixing engine (Paint load, color pickup, and drag simulation)
+#[derive(Debug, Clone)]
+pub struct WetMediaMixer {
+    /// How much wet paint is currently loaded on the brush tip (0.0 = dry, 1.0 = full load)
+    pub paint_load: f32,
+    /// Water content (wetness): higher values blend more aggressively with existing canvas colors
+    pub wetness: f32,
+    /// Current pigment color on the brush bristles (linear RGBA)
+    pub current_color: [f32; 4],
+}
+
+impl WetMediaMixer {
+    pub fn new(initial_color: [f32; 4], wetness: f32, paint_load: f32) -> Self {
+        Self {
+            paint_load: paint_load.clamp(0.0, 1.0),
+            wetness: wetness.clamp(0.0, 1.0),
+            current_color: initial_color,
+        }
+    }
+
+    /// Blends incoming canvas pixel color into the brush tip and returns the deposited color.
+    pub fn deposit_and_pickup(&mut self, canvas_color: [f32; 4]) -> [f32; 4] {
+        if self.paint_load <= 0.001 {
+            // Dry brush: purely picks up canvas color and drags it
+            self.current_color = canvas_color;
+            return canvas_color;
+        }
+
+        // Color pickup: existing canvas pigment rubs into brush tip proportional to wetness
+        let pickup_factor = self.wetness * (1.0 - self.paint_load * 0.5);
+        for ch in 0..3 {
+            self.current_color[ch] =
+                self.current_color[ch] * (1.0 - pickup_factor) + canvas_color[ch] * pickup_factor;
+        }
+
+        // Deposited color onto canvas
+        let mut deposited = self.current_color;
+        deposited[3] = self.current_color[3] * self.paint_load;
+
+        // Brush paint depletes slightly along the stroke
+        self.paint_load = (self.paint_load - 0.002).max(0.0);
+
+        deposited
+    }
+}
+
+/// Particle Scatter Generator for realistic bristle and airbrush effects
+pub struct ScatterGenerator {
+    /// Scatter radius perpendicular and parallel to the stroke
+    pub scatter_amount: f64,
+    /// Number of dab particles generated per step
+    pub count: usize,
+    seed: u64,
+}
+
+impl ScatterGenerator {
+    pub fn new(scatter_amount: f64, count: usize) -> Self {
+        Self {
+            scatter_amount,
+            count: count.max(1),
+            seed: 0x123456789ABCDEF0,
+        }
+    }
+
+    fn next_random(&mut self) -> f64 {
+        // Linear Congruential Generator for deterministic high-speed scatter
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((self.seed >> 32) as u32 as f64) / (u32::MAX as f64)
+    }
+
+    /// Generates scattered sub-pixel offsets around a base coordinate (x, y)
+    pub fn generate_scatter(&mut self, center_x: f64, center_y: f64) -> Vec<(f64, f64)> {
+        let mut particles = Vec::with_capacity(self.count);
+        for _ in 0..self.count {
+            let angle = self.next_random() * std::f64::consts::PI * 2.0;
+            let radius = self.next_random().sqrt() * self.scatter_amount;
+            let sx = center_x + radius * angle.cos();
+            let sy = center_y + radius * angle.sin();
+            particles.push((sx, sy));
+        }
+        particles
+    }
+}
+
+/// Canvas paper grain texture modulator (e.g. cold-press watercolor paper or linen canvas)
+pub struct PaperTextureMask {
+    pub scale: f64,
+    pub contrast: f64,
+}
+
+impl PaperTextureMask {
+    pub fn new(scale: f64, contrast: f64) -> Self {
+        Self {
+            scale: scale.max(1.0),
+            contrast: contrast.clamp(0.0, 2.0),
+        }
+    }
+
+    /// Evaluates grain density factor in range [0.0, 1.0] at canvas coordinate (x, y)
+    pub fn evaluate_density(&self, x: f64, y: f64) -> f32 {
+        let sx = x / self.scale;
+        let sy = y / self.scale;
+        // High-frequency procedural texture synthesized via sinusoidal octaves
+        let n1 = (sx.sin() * sy.cos()) * 0.5 + 0.5;
+        let n2 = ((sx * 2.3).cos() * (sy * 2.7).sin()) * 0.5 + 0.5;
+        let grain = (n1 * 0.6 + n2 * 0.4).powf(self.contrast);
+        grain.clamp(0.0, 1.0) as f32
+    }
+}

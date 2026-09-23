@@ -171,3 +171,86 @@ impl Drop for ScratchDiskManager {
         let _ = std::fs::remove_file(&self.scratch_path);
     }
 }
+
+/// Commands sent to the background tile streaming worker thread.
+enum StreamCommand {
+    Evict(TileKey, Vec<u8>),
+    Fetch(TileKey),
+    Shutdown,
+}
+
+/// Events returned from the background tile streaming worker thread.
+pub enum StreamResponse {
+    Fetched(TileKey, Vec<u8>),
+    Evicted(TileKey),
+}
+
+/// Asynchronous background tile streaming queue.
+/// Allows the main rendering and UI loop to stream tiles to and from SSD without blocking.
+pub struct AsyncTileStreamer {
+    cmd_tx: std::sync::mpsc::Sender<StreamCommand>,
+    resp_rx: std::sync::mpsc::Receiver<StreamResponse>,
+    worker_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AsyncTileStreamer {
+    pub fn new<P: AsRef<Path>>(scratch_dir: P, max_ram_tiles: usize) -> std::io::Result<Self> {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<StreamCommand>();
+        let (resp_tx, resp_rx) = std::sync::mpsc::channel::<StreamResponse>();
+
+        let mut manager = ScratchDiskManager::new(scratch_dir, max_ram_tiles)?;
+
+        let worker_handle = std::thread::spawn(move || {
+            while let Ok(cmd) = cmd_rx.recv() {
+                match cmd {
+                    StreamCommand::Evict(key, data) => {
+                        let _ = manager.put_tile(key, data);
+                        let _ = resp_tx.send(StreamResponse::Evicted(key));
+                    }
+                    StreamCommand::Fetch(key) => {
+                        if let Ok(Some(data)) = manager.get_tile(key) {
+                            let _ = resp_tx.send(StreamResponse::Fetched(key, data));
+                        }
+                    }
+                    StreamCommand::Shutdown => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            cmd_tx,
+            resp_rx,
+            worker_handle: Some(worker_handle),
+        })
+    }
+
+    /// Asynchronously schedules a tile to be written/swapped in the background.
+    pub fn queue_evict(&self, key: TileKey, data: Vec<u8>) -> Result<(), String> {
+        self.cmd_tx
+            .send(StreamCommand::Evict(key, data))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Asynchronously requests a tile from the scratch disk in the background.
+    pub fn queue_fetch(&self, key: TileKey) -> Result<(), String> {
+        self.cmd_tx
+            .send(StreamCommand::Fetch(key))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Non-blocking poll for any completed tile fetch/evict events from the background thread.
+    pub fn try_recv_response(&self) -> Option<StreamResponse> {
+        self.resp_rx.try_recv().ok()
+    }
+}
+
+impl Drop for AsyncTileStreamer {
+    fn drop(&mut self) {
+        let _ = self.cmd_tx.send(StreamCommand::Shutdown);
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
+    }
+}

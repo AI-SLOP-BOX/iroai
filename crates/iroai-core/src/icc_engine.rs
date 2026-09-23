@@ -15,6 +15,94 @@ impl IccXyz {
     }
 }
 
+/// 3D Color Lookup Table (CLUT) for multidimensional non-linear color conversion (mft1/mft2/mAB/mBA)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Clut3D {
+    pub grid_points: usize, // e.g. 17 or 33
+    pub output_channels: usize, // e.g. 3 (RGB/XYZ) or 4 (CMYK)
+    pub table: Vec<f32>, // Flat array of normalized values [0.0, 1.0]
+}
+
+impl Clut3D {
+    pub fn new(grid_points: usize, output_channels: usize, table: Vec<f32>) -> Self {
+        Self {
+            grid_points,
+            output_channels,
+            table,
+        }
+    }
+
+    /// Trilinear interpolation over 3D cube [r, g, b] in range [0.0, 1.0]
+    pub fn sample_trilinear(&self, r: f32, g: f32, b: f32) -> Vec<f32> {
+        let n = self.grid_points;
+        if n < 2 || self.table.is_empty() {
+            return vec![r, g, b];
+        }
+
+        let max_idx = (n - 1) as f32;
+        let rx = (r.clamp(0.0, 1.0) * max_idx);
+        let gy = (g.clamp(0.0, 1.0) * max_idx);
+        let bz = (b.clamp(0.0, 1.0) * max_idx);
+
+        let x0 = rx.floor() as usize;
+        let y0 = gy.floor() as usize;
+        let z0 = bz.floor() as usize;
+
+        let x1 = (x0 + 1).min(n - 1);
+        let y1 = (y0 + 1).min(n - 1);
+        let z1 = (z0 + 1).min(n - 1);
+
+        let fx = rx - x0 as f32;
+        let fy = gy - y0 as f32;
+        let fz = bz - z0 as f32;
+
+        let get_entry = |x: usize, y: usize, z: usize| -> &[f32] {
+            let idx = (z * n * n + y * n + x) * self.output_channels;
+            if idx + self.output_channels <= self.table.len() {
+                &self.table[idx..idx + self.output_channels]
+            } else {
+                &[]
+            }
+        };
+
+        let c000 = get_entry(x0, y0, z0);
+        let c100 = get_entry(x1, y0, z0);
+        let c010 = get_entry(x0, y1, z0);
+        let c110 = get_entry(x1, y1, z0);
+        let c001 = get_entry(x0, y0, z1);
+        let c101 = get_entry(x1, y0, z1);
+        let c011 = get_entry(x0, y1, z1);
+        let c111 = get_entry(x1, y1, z1);
+
+        let mut out = vec![0.0; self.output_channels];
+        for ch in 0..self.output_channels {
+            let v000 = c000.get(ch).copied().unwrap_or(0.0);
+            let v100 = c100.get(ch).copied().unwrap_or(0.0);
+            let v010 = c010.get(ch).copied().unwrap_or(0.0);
+            let v110 = c110.get(ch).copied().unwrap_or(0.0);
+            let v001 = c001.get(ch).copied().unwrap_or(0.0);
+            let v101 = c101.get(ch).copied().unwrap_or(0.0);
+            let v011 = c011.get(ch).copied().unwrap_or(0.0);
+            let v111 = c111.get(ch).copied().unwrap_or(0.0);
+
+            // Interpolate along X
+            let c00 = v000 * (1.0 - fx) + v100 * fx;
+            let c10 = v010 * (1.0 - fx) + v110 * fx;
+            let c01 = v001 * (1.0 - fx) + v101 * fx;
+            let c11 = v011 * (1.0 - fx) + v111 * fx;
+
+            // Interpolate along Y
+            let c0 = c00 * (1.0 - fy) + c10 * fy;
+            let c1 = c01 * (1.0 - fy) + c11 * fy;
+
+            // Interpolate along Z
+            out[ch] = c0 * (1.0 - fz) + c1 * fz;
+        }
+
+        out
+    }
+}
+
 /// 解析済み ICC v2/v4 プロファイル
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedIccProfile {
@@ -26,6 +114,7 @@ pub struct ParsedIccProfile {
     pub blue_colorant: IccXyz,
     pub media_white_point: IccXyz,
     pub gamma: f32,
+    pub clut_a2b: Option<Clut3D>,
 }
 
 impl Default for ParsedIccProfile {
@@ -40,6 +129,7 @@ impl Default for ParsedIccProfile {
             blue_colorant: IccXyz::new(0.1430664, 0.0606079, 0.7140961),
             media_white_point: IccXyz::new(0.9504547, 1.0000000, 1.0890503), // D65
             gamma: 2.2,
+            clut_a2b: None,
         }
     }
 }
@@ -87,6 +177,7 @@ impl ColorManagementEngine {
         let mut green_col = IccXyz::new(0.385, 0.717, 0.097);
         let mut blue_col = IccXyz::new(0.143, 0.061, 0.714);
         let mut gamma = 2.2;
+        let mut clut_3d = None;
 
         let mut offset = 132;
         for _ in 0..tag_count {
@@ -118,6 +209,29 @@ impl ColorManagementEngine {
                         let g_u8_8 = u16::from_be_bytes([tag_data[12], tag_data[13]]) as f32 / 256.0;
                         gamma = g_u8_8;
                     }
+                } else if tag_data.len() >= 52 && (&tag_data[0..4] == b"mft1" || &tag_data[0..4] == b"mft2") {
+                    // Multi-function table with 3D CLUT
+                    let input_ch = tag_data[8] as usize;
+                    let output_ch = tag_data[9] as usize;
+                    let grid_pts = tag_data[10] as usize;
+                    if input_ch == 3 && grid_pts >= 2 {
+                        let total_entries = grid_pts * grid_pts * grid_pts * output_ch;
+                        let mut clut_table = Vec::with_capacity(total_entries);
+                        let clut_start = 52;
+                        if &tag_data[0..4] == b"mft1" && tag_data.len() >= clut_start + total_entries {
+                            for &byte in &tag_data[clut_start..clut_start + total_entries] {
+                                clut_table.push(byte as f32 / 255.0);
+                            }
+                        } else if &tag_data[0..4] == b"mft2" && tag_data.len() >= clut_start + total_entries * 2 {
+                            for chunk in tag_data[clut_start..clut_start + total_entries * 2].chunks_exact(2) {
+                                let val = u16::from_be_bytes([chunk[0], chunk[1]]) as f32 / 65535.0;
+                                clut_table.push(val);
+                            }
+                        }
+                        if clut_table.len() == total_entries {
+                            clut_3d = Some(Clut3D::new(grid_pts, output_ch, clut_table));
+                        }
+                    }
                 }
             }
         }
@@ -131,6 +245,7 @@ impl ColorManagementEngine {
             blue_colorant: blue_col,
             media_white_point: IccXyz::new(illuminant_x, illuminant_y, illuminant_z),
             gamma,
+            clut_a2b: clut_3d,
         })
     }
 

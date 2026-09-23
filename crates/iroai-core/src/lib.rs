@@ -29,6 +29,7 @@ pub mod psd_resources;
 pub mod icc_engine;
 pub mod scratch_disk;
 pub mod brush_dynamics;
+pub mod psd_tagged_blocks;
 
 pub use buffer::PixelBuffer;
 pub use color::{Color, BlendMode, ColorHdr};
@@ -56,6 +57,7 @@ pub use cmyk::{ColorCmyk, CmykManager};
 pub use tile_pyramid::TilePyramid;
 pub use bezier::BezierEngine;
 pub use psd_resources::{ImageResourceId, ResolutionInfo, ParsedPsdResources, PsdResourceParser};
-pub use icc_engine::{IccXyz, ParsedIccProfile, ColorManagementEngine};
-pub use scratch_disk::{ScratchDiskManager, TileKey, TILE_BYTES};
-pub use brush_dynamics::{StylusInput, PressureCurve, StrokeStabilizer, interpolate_catmull_rom};
+pub use psd_tagged_blocks::{PsdTaggedBlockParser, ParsedTaggedBlocks, TaggedLayerEffects, TaggedDropShadow, TaggedStrokeEffect, TaggedSolidColor, TaggedTextData};
+pub use icc_engine::{IccXyz, ParsedIccProfile, ColorManagementEngine, Clut3D};
+pub use scratch_disk::{ScratchDiskManager, AsyncTileStreamer, StreamResponse, TileKey, TILE_BYTES};
+pub use brush_dynamics::{StylusInput, PressureCurve, StrokeStabilizer, interpolate_catmull_rom, WetMediaMixer, ScatterGenerator, PaperTextureMask};
