@@ -1,0 +1,13 @@
+[package]
+name = "iroai-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+iroai-core = { path = "../iroai-core" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true

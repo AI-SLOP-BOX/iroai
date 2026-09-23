@@ -1,0 +1,12 @@
+[package]
+name = "iroai-gpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+iroai-core = { path = "../iroai-core" }
+wgpu.workspace = true
+bytemuck.workspace = true
+log.workspace = true

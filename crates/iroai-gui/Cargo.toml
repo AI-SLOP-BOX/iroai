@@ -1,0 +1,17 @@
+[package]
+name = "iroai-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+iroai-core = { path = "../iroai-core" }
+iroai-gpu = { path = "../iroai-gpu" }
+iroai-moufu = { path = "../iroai-moufu" }
+egui.workspace = true
+eframe.workspace = true
+rfd.workspace = true
+log.workspace = true
+env_logger.workspace = true
+bytemuck.workspace = true
