@@ -147,3 +147,58 @@ fn test_wet_media_and_scatter_brush() {
     assert!((0.0..=1.0).contains(&d1));
     assert!((0.0..=1.0).contains(&d2));
 }
+
+#[test]
+fn test_bicubic_and_smart_object_fidelity() {
+    use iroai_core::buffer::PixelBuffer;
+    use iroai_core::color::Color;
+    use iroai_core::smart_object::SmartObject;
+    use iroai_core::transform::Transform;
+
+    let mut buf = PixelBuffer::new(10, 10);
+    buf.set_pixel(5, 5, Color::rgb(200, 100, 50));
+
+    // Bicubic sampling smooth interpolator
+    let sampled = Transform::sample_bicubic(&buf, 5.0, 5.0);
+    assert_eq!(sampled.r, 200);
+    assert_eq!(sampled.g, 100);
+    assert_eq!(sampled.b, 50);
+
+    // Smart object non-destructive 2x scaling
+    let mut smart = SmartObject::new(buf);
+    smart.scale_x = 2.0;
+    smart.scale_y = 2.0;
+    let rendered = smart.render(20, 20);
+    assert_eq!(rendered.width, 20);
+    assert_eq!(rendered.height, 20);
+}
+
+#[test]
+fn test_selection_feather_and_hdr_buffer() {
+    use iroai_core::buffer::{PixelBuffer, PixelBuffer16};
+    use iroai_core::color::Color;
+    use iroai_core::selection::{SelectionMask, SelectionOp};
+
+    // 1. Selection Feather (soft boundary transition)
+    let mut mask = SelectionMask::new(20, 20);
+    mask.select_rect(5, 5, 10, 10, SelectionOp::New);
+    assert_eq!(mask.get_value(5, 5), 255);
+    assert_eq!(mask.get_value(0, 0), 0);
+
+    mask.feather(3.0);
+    let edge_val = mask.get_value(5, 5);
+    // Boundary should soften into a gradual feather gradient
+    assert!(edge_val > 0 && edge_val < 255);
+
+    // 2. 16-bit HDR buffer roundtrip without banding
+    let mut buf8 = PixelBuffer::new(4, 4);
+    buf8.set_pixel(0, 0, Color::rgba(128, 64, 32, 255));
+    let buf16 = PixelBuffer16::from_buffer8(&buf8);
+    // 128 maps to ~32896 in 16-bit range
+    assert!(buf16.data[0] > 32000 && buf16.data[0] < 33500);
+
+    let roundtrip8 = buf16.to_buffer8();
+    assert_eq!(roundtrip8.data[0], 128);
+    assert_eq!(roundtrip8.data[1], 64);
+    assert_eq!(roundtrip8.data[2], 32);
+}

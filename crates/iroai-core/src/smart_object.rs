@@ -43,10 +43,9 @@ impl SmartObject {
                 let orig_px = dx / self.scale_x + orig_w / 2.0;
                 let orig_py = dy / self.scale_y + orig_h / 2.0;
 
-                if orig_px >= 0.0 && orig_px < orig_w && orig_py >= 0.0 && orig_py < orig_h {
-                    if let Some(c) = self.original_buffer.get_pixel(orig_px as u32, orig_py as u32) {
-                        rendered.set_pixel(x, y, c);
-                    }
+                if orig_px >= -0.5 && orig_px < orig_w + 0.5 && orig_py >= -0.5 && orig_py < orig_h + 0.5 {
+                    let c = crate::transform::Transform::sample_bicubic(&self.original_buffer, orig_px, orig_py);
+                    rendered.set_pixel(x, y, c);
                 }
             }
         }

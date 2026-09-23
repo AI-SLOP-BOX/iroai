@@ -142,4 +142,89 @@ impl SelectionMask {
             }
         }
     }
+
+    /// Feathers (smooth Gaussian blur) the selection boundary into 8-bit soft gradients.
+    pub fn feather(&mut self, radius: f32) {
+        if radius <= 0.0 || self.data.is_empty() {
+            return;
+        }
+
+        let r = radius.ceil() as i32;
+        let sigma = radius / 2.0;
+        let two_sigma2 = 2.0 * sigma * sigma;
+
+        // Generate 1D Gaussian kernel
+        let mut kernel = Vec::with_capacity((r * 2 + 1) as usize);
+        let mut sum = 0.0f32;
+        for i in -r..=r {
+            let val = (-(i * i) as f32 / two_sigma2).exp();
+            kernel.push(val);
+            sum += val;
+        }
+        for k in &mut kernel {
+            *k /= sum;
+        }
+
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        // Horizontal pass
+        let mut temp = vec![0.0f32; w * h];
+        for y in 0..h {
+            let row_start = y * w;
+            for x in 0..w {
+                let mut acc = 0.0f32;
+                for (k_idx, ki) in (-r..=r).enumerate() {
+                    let sx = (x as i32 + ki).clamp(0, (w - 1) as i32) as usize;
+                    acc += self.data[row_start + sx] as f32 * kernel[k_idx];
+                }
+                temp[row_start + x] = acc;
+            }
+        }
+
+        // Vertical pass
+        for y in 0..h {
+            let row_start = y * w;
+            for x in 0..w {
+                let mut acc = 0.0f32;
+                for (k_idx, ki) in (-r..=r).enumerate() {
+                    let sy = (y as i32 + ki).clamp(0, (h - 1) as i32) as usize;
+                    acc += temp[sy * w + x] * kernel[k_idx];
+                }
+                self.data[row_start + x] = acc.clamp(0.0, 255.0).round() as u8;
+            }
+        }
+    }
+
+    /// Expands (radius > 0) or contracts (radius < 0) the selection boundary via morphological filtering.
+    pub fn expand_contract(&mut self, radius: i32) {
+        if radius == 0 || self.data.is_empty() {
+            return;
+        }
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let orig = self.data.clone();
+        let r_abs = radius.abs() as i32;
+
+        for y in 0..h {
+            for x in 0..w {
+                let mut target_val = if radius > 0 { 0u8 } else { 255u8 };
+                for dy in -r_abs..=r_abs {
+                    let sy = (y as i32 + dy).clamp(0, (h - 1) as i32) as usize;
+                    for dx in -r_abs..=r_abs {
+                        if dx * dx + dy * dy <= r_abs * r_abs {
+                            let sx = (x as i32 + dx).clamp(0, (w - 1) as i32) as usize;
+                            let val = orig[sy * w + sx];
+                            if radius > 0 {
+                                target_val = target_val.max(val);
+                            } else {
+                                target_val = target_val.min(val);
+                            }
+                        }
+                    }
+                }
+                self.data[y * w + x] = target_val;
+            }
+        }
+    }
 }

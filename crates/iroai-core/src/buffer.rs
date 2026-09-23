@@ -126,3 +126,48 @@ impl PixelBuffer {
         }
     }
 }
+
+/// 16-bit per channel (RGBA 64-bit) High Dynamic Range Pixel Buffer.
+/// Prevents tone jumps, banding, and quantization loss during heavy adjustments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PixelBuffer16 {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u16>, // RGBA 16-bit, 4 u16 (8 bytes) per pixel
+}
+
+impl PixelBuffer16 {
+    pub fn new(width: u32, height: u32) -> Self {
+        let count = (width as usize).checked_mul(height as usize).unwrap_or(0);
+        let size = count.checked_mul(4).unwrap_or(0);
+        Self {
+            width,
+            height,
+            data: vec![0; size],
+        }
+    }
+
+    pub fn from_buffer8(buf: &PixelBuffer) -> Self {
+        let mut out = Self::new(buf.width, buf.height);
+        for (dst, src) in out.data.chunks_exact_mut(4).zip(buf.data.chunks_exact(4)) {
+            // Expand 8-bit [0..255] to 16-bit [0..65535]
+            dst[0] = ((src[0] as u32 * 65535) / 255) as u16;
+            dst[1] = ((src[1] as u32 * 65535) / 255) as u16;
+            dst[2] = ((src[2] as u32 * 65535) / 255) as u16;
+            dst[3] = ((src[3] as u32 * 65535) / 255) as u16;
+        }
+        out
+    }
+
+    pub fn to_buffer8(&self) -> PixelBuffer {
+        let mut out = PixelBuffer::new(self.width, self.height);
+        for (dst, src) in out.data.chunks_exact_mut(4).zip(self.data.chunks_exact(4)) {
+            // Downscale 16-bit [0..65535] to 8-bit [0..255] with rounding
+            dst[0] = ((src[0] as u32 * 255 + 32767) / 65535) as u8;
+            dst[1] = ((src[1] as u32 * 255 + 32767) / 65535) as u8;
+            dst[2] = ((src[2] as u32 * 255 + 32767) / 65535) as u8;
+            dst[3] = ((src[3] as u32 * 255 + 32767) / 65535) as u8;
+        }
+        out
+    }
+}

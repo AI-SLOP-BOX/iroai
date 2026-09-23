@@ -31,7 +31,7 @@ pub mod scratch_disk;
 pub mod brush_dynamics;
 pub mod psd_tagged_blocks;
 
-pub use buffer::PixelBuffer;
+pub use buffer::{PixelBuffer, PixelBuffer16};
 pub use color::{Color, BlendMode, ColorHdr};
 pub use layer::{Layer, LayerId, LayerKind, AdjustmentKind};
 pub use document::{Document, DocumentId};

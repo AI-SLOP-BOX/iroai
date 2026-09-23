@@ -59,6 +59,66 @@ impl Transform {
         out
     }
 
+    /// Bicubic spline interpolation kernel (Catmull-Rom variant, a = -0.5)
+    fn cubic_hermite(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+        let a_coeff = -0.5 * a + 1.5 * b - 1.5 * c + 0.5 * d;
+        let b_coeff = a - 2.5 * b + 2.0 * c - 0.5 * d;
+        let c_coeff = -0.5 * a + 0.5 * c;
+        let d_coeff = b;
+        a_coeff * t * t * t + b_coeff * t * t + c_coeff * t + d_coeff
+    }
+
+    /// High-precision Bicubic interpolation for high-fidelity scaling and rotation.
+    pub fn sample_bicubic(buffer: &PixelBuffer, fx: f32, fy: f32) -> Color {
+        let x = fx.floor() as i32;
+        let y = fy.floor() as i32;
+        let tx = fx - x as f32;
+        let ty = fy - y as f32;
+
+        let get_px = |ix: i32, iy: i32| -> [f32; 4] {
+            let cx = ix.clamp(0, (buffer.width - 1) as i32) as u32;
+            let cy = iy.clamp(0, (buffer.height - 1) as i32) as u32;
+            let c = buffer.get_pixel(cx, cy).unwrap_or(Color::TRANSPARENT);
+            [c.r as f32, c.g as f32, c.b as f32, c.a as f32]
+        };
+
+        let mut col = [0.0f32; 4];
+        for ch in 0..4 {
+            let mut row = [0.0f32; 4];
+            for j in 0..4 {
+                let iy = y - 1 + j as i32;
+                let p0 = get_px(x - 1, iy)[ch];
+                let p1 = get_px(x, iy)[ch];
+                let p2 = get_px(x + 1, iy)[ch];
+                let p3 = get_px(x + 2, iy)[ch];
+                row[j] = Self::cubic_hermite(p0, p1, p2, p3, tx);
+            }
+            col[ch] = Self::cubic_hermite(row[0], row[1], row[2], row[3], ty).clamp(0.0, 255.0);
+        }
+
+        Color::rgba(col[0] as u8, col[1] as u8, col[2] as u8, col[3] as u8)
+    }
+
+    /// Resize using high-precision Bicubic sampling (smoother curves, reduced aliasing).
+    pub fn resize_bicubic(buffer: &PixelBuffer, new_width: u32, new_height: u32) -> PixelBuffer {
+        if new_width == 0 || new_height == 0 {
+            return PixelBuffer::new(1, 1);
+        }
+        let mut out = PixelBuffer::new(new_width, new_height);
+        let x_scale = (buffer.width as f32) / (new_width as f32);
+        let y_scale = (buffer.height as f32) / (new_height as f32);
+
+        for y in 0..new_height {
+            let src_y = (y as f32 + 0.5) * y_scale - 0.5;
+            for x in 0..new_width {
+                let src_x = (x as f32 + 0.5) * x_scale - 0.5;
+                let c = Self::sample_bicubic(buffer, src_x, src_y);
+                out.set_pixel(x, y, c);
+            }
+        }
+        out
+    }
+
     pub fn resize_bilinear(buffer: &PixelBuffer, new_width: u32, new_height: u32) -> PixelBuffer {
         if new_width == 0 || new_height == 0 {
             return PixelBuffer::new(1, 1);
