@@ -71,6 +71,7 @@ pub struct Brush {
     pub size: f32,
     pub hardness: f32,
     pub opacity: f32,
+    pub flow: f32,
     pub color: Color,
     pub spacing: f32,
     pub pressure_size: bool,
@@ -85,6 +86,7 @@ impl Default for Brush {
             size: 16.0,
             hardness: 0.8,
             opacity: 1.0,
+            flow: 1.0,
             color: Color::BLACK,
             spacing: 0.2,
             pressure_size: true,
@@ -306,10 +308,12 @@ impl Brush {
                             ((r - d) / (r - inner_r).max(0.001)).clamp(0.0, 1.0)
                         };
                         let mask_idx = row_offset + (sx - min_x);
-                        // Stroke-level max accumulation: prevents stamp-overlap darkening
-                        if alpha > stroke_mask[mask_idx] {
-                            stroke_mask[mask_idx] = alpha;
-                        }
+                        // Photoshop Flow / Opacity model:
+                        // Flow deposits paint per stamp with alpha accumulation: A_new = A_old + (1 - A_old) * (alpha * flow)
+                        // Overall stroke is capped at self.opacity when composited.
+                        let stamp_flow = (alpha * self.flow).clamp(0.0, 1.0);
+                        let prev_mask = stroke_mask[mask_idx];
+                        stroke_mask[mask_idx] = (prev_mask + (1.0 - prev_mask) * stamp_flow).min(1.0);
                     }
                 }
             }

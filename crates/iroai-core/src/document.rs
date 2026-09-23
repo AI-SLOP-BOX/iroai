@@ -168,8 +168,25 @@ impl Document {
         self.active_layer_id = Some(id);
     }
 
-    pub fn composite(&self) -> PixelBuffer {
-        let mut composite_buf = PixelBuffer::new(self.width, self.height);
+    /// Composites only a dirty sub-rectangle (min_x..max_x, min_y..max_y) of the canvas.
+    /// In high-resolution (4K/8K) documents, this reduces composition overhead by orders of magnitude.
+    pub fn composite_rect(&self, composite_buf: &mut PixelBuffer, min_x: u32, min_y: u32, max_x: u32, max_y: u32) {
+        let min_x = min_x.min(self.width);
+        let max_x = max_x.min(self.width);
+        let min_y = min_y.min(self.height);
+        let max_y = max_y.min(self.height);
+
+        if min_x >= max_x || min_y >= max_y {
+            return;
+        }
+
+        // Clear dirty area of composite buffer to transparent
+        for y in min_y..max_y {
+            let row_start = (y as usize) * (self.width as usize) * 4;
+            let start = row_start + (min_x as usize) * 4;
+            let end = row_start + (max_x as usize) * 4;
+            composite_buf.data[start..end].fill(0);
+        }
 
         for (i, layer) in self.layers.iter().enumerate() {
             if !layer.visible || layer.opacity <= 0.0 {
@@ -201,11 +218,15 @@ impl Document {
                         }
                     }
                     let op = layer.opacity;
-                    for idx in (0..composite_buf.data.len()).step_by(4) {
-                        for c in 0..3 {
-                            let orig = composite_buf.data[idx + c] as f32;
-                            let adj_val = temp.data[idx + c] as f32;
-                            composite_buf.data[idx + c] = (orig * (1.0 - op) + adj_val * op).round() as u8;
+                    for y in min_y..max_y {
+                        let row_start = (y as usize) * (self.width as usize) * 4;
+                        for x in min_x..max_x {
+                            let idx = row_start + (x as usize) * 4;
+                            for c in 0..3 {
+                                let orig = composite_buf.data[idx + c] as f32;
+                                let adj_val = temp.data[idx + c] as f32;
+                                composite_buf.data[idx + c] = (orig * (1.0 - op) + adj_val * op).round() as u8;
+                            }
                         }
                     }
                     continue;
@@ -236,9 +257,9 @@ impl Document {
                 None
             };
 
-            for y in 0..self.height {
+            for y in min_y..max_y {
                 let row_start = (y as usize) * (self.width as usize) * 4;
-                for x in 0..self.width {
+                for x in min_x..max_x {
                     let idx = row_start + (x as usize) * 4;
 
                     if let Some(target) = clip_target {
@@ -280,7 +301,11 @@ impl Document {
                 }
             }
         }
+    }
 
+    pub fn composite(&self) -> PixelBuffer {
+        let mut composite_buf = PixelBuffer::new(self.width, self.height);
+        self.composite_rect(&mut composite_buf, 0, 0, self.width, self.height);
         composite_buf
     }
 
