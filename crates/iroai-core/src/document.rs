@@ -125,12 +125,25 @@ impl Document {
             let top_layer = self.layers.remove(top_idx);
             let bottom_layer = &mut self.layers[top_idx - 1];
 
+            // Render top layer with full style (DropShadow, Stroke) and mask if present
+            let top_rendered = if let Some(style) = &top_layer.style {
+                style.render_styled(&top_layer.buffer)
+            } else {
+                top_layer.buffer.clone()
+            };
+
             for y in 0..self.height {
                 for x in 0..self.width {
-                    if let Some(top_px) = top_layer.buffer.get_pixel(x, y) {
-                        if top_px.a > 0 {
+                    if let Some(top_px) = top_rendered.get_pixel(x, y) {
+                        let mask_factor = if top_layer.mask_enabled {
+                            top_layer.mask.as_ref().map(|m| m.get_value(x, y) as f32 / 255.0).unwrap_or(1.0)
+                        } else {
+                            1.0
+                        };
+                        let eff_opacity = top_layer.opacity * mask_factor;
+                        if eff_opacity > 0.0 && top_px.a > 0 {
                             let bot_px = bottom_layer.buffer.get_pixel(x, y).unwrap_or(Color::TRANSPARENT);
-                            let blended = top_layer.blend_mode.blend_pixel(bot_px, top_px, top_layer.opacity);
+                            let blended = top_layer.blend_mode.blend_pixel(bot_px, top_px, eff_opacity);
                             bottom_layer.buffer.set_pixel(x, y, blended);
                         }
                     }
@@ -209,8 +222,16 @@ impl Document {
                 layer.buffer.clone()
             };
 
+            // Photoshop clipping mask rule: find the first non-clipping base layer below
             let clip_target = if layer.clipping_mask && i > 0 {
-                self.layers.get(i - 1)
+                let mut base_idx = None;
+                for prev_i in (0..i).rev() {
+                    if !self.layers[prev_i].clipping_mask {
+                        base_idx = Some(prev_i);
+                        break;
+                    }
+                }
+                base_idx.and_then(|idx| self.layers.get(idx))
             } else {
                 None
             };

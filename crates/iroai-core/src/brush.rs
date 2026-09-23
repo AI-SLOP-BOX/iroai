@@ -245,6 +245,8 @@ impl Brush {
         self.paint_pointer_stamp(buffer, &event);
     }
 
+    /// Paints a continuous stroke line. For semi-transparent brushes (opacity < 1.0),
+    /// paints stamps with stroke-level maximum accumulation to prevent overlapping blotches.
     pub fn paint_line(&self, buffer: &mut PixelBuffer, x0: f32, y0: f32, x1: f32, y1: f32) {
         let dx = x1 - x0;
         let dy = y1 - y0;
@@ -257,11 +259,106 @@ impl Brush {
             return;
         }
 
+        // Bounding box of the entire stroke segment
+        let radius = self.size * 0.5 + 2.0;
+        let min_x = ((x0.min(x1) - radius).max(0.0) as usize).min(buffer.width as usize);
+        let max_x = ((x0.max(x1) + radius + 1.0).min(buffer.width as f32) as usize).min(buffer.width as usize);
+        let min_y = ((y0.min(y1) - radius).max(0.0) as usize).min(buffer.height as usize);
+        let max_y = ((y0.max(y1) + radius + 1.0).min(buffer.height as f32) as usize).min(buffer.height as usize);
+
+        let bb_w = max_x.saturating_sub(min_x);
+        let bb_h = max_y.saturating_sub(min_y);
+
+        if bb_w == 0 || bb_h == 0 {
+            return;
+        }
+
+        // 1-channel alpha mask accumulator for the stroke segment (0.0 ..= 1.0)
+        let mut stroke_mask = vec![0.0f32; bb_w * bb_h];
+        let r = self.size * 0.5;
+        let r2 = r * r;
+        let inner_r = r * self.hardness;
+        let inner_r2 = inner_r * inner_r;
+
         for i in 0..=count {
             let t = i as f32 / count as f32;
             let cx = x0 + dx * t;
             let cy = y0 + dy * t;
-            self.paint_stamp(buffer, cx, cy);
+
+            let stamp_min_x = ((cx - r).max(min_x as f32) as usize).min(max_x);
+            let stamp_max_x = ((cx + r + 1.0).min(max_x as f32) as usize).min(max_x);
+            let stamp_min_y = ((cy - r).max(min_y as f32) as usize).min(max_y);
+            let stamp_max_y = ((cy + r + 1.0).min(max_y as f32) as usize).min(max_y);
+
+            for sy in stamp_min_y..stamp_max_y {
+                let s_dy = sy as f32 + 0.5 - cy;
+                let s_dy2 = s_dy * s_dy;
+                let row_offset = (sy - min_y) * bb_w;
+
+                for sx in stamp_min_x..stamp_max_x {
+                    let s_dx = sx as f32 + 0.5 - cx;
+                    let d2 = s_dx * s_dx + s_dy2;
+                    if d2 <= r2 {
+                        let alpha = if d2 <= inner_r2 {
+                            1.0
+                        } else {
+                            let d = d2.sqrt();
+                            ((r - d) / (r - inner_r).max(0.001)).clamp(0.0, 1.0)
+                        };
+                        let mask_idx = row_offset + (sx - min_x);
+                        // Stroke-level max accumulation: prevents stamp-overlap darkening
+                        if alpha > stroke_mask[mask_idx] {
+                            stroke_mask[mask_idx] = alpha;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Composite accumulated stroke mask onto layer buffer once
+        for sy in min_y..max_y {
+            let row_offset = (sy - min_y) * bb_w;
+            let buf_row_start = sy * (buffer.width as usize) * 4;
+
+            for sx in min_x..max_x {
+                let mask_val = stroke_mask[row_offset + (sx - min_x)];
+                if mask_val <= 0.0 {
+                    continue;
+                }
+
+                let eff_alpha = (self.opacity * mask_val).clamp(0.0, 1.0);
+                let p_idx = buf_row_start + sx * 4;
+                let cur_color = Color::rgba(
+                    buffer.data[p_idx],
+                    buffer.data[p_idx + 1],
+                    buffer.data[p_idx + 2],
+                    buffer.data[p_idx + 3],
+                );
+
+                match self.tool {
+                    BrushTool::Brush => {
+                        let stamp_color = Color {
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                            a: (self.color.a as f32 * eff_alpha).round() as u8,
+                        };
+                        let blended = crate::color::BlendMode::Normal.blend_pixel(cur_color, stamp_color, 1.0);
+                        buffer.data[p_idx] = blended.r;
+                        buffer.data[p_idx + 1] = blended.g;
+                        buffer.data[p_idx + 2] = blended.b;
+                        buffer.data[p_idx + 3] = blended.a;
+                    }
+                    BrushTool::Eraser => {
+                        let cur_a = cur_color.a as f32 / 255.0;
+                        let new_a = (cur_a * (1.0 - eff_alpha)).clamp(0.0, 1.0);
+                        buffer.data[p_idx + 3] = (new_a * 255.0).round() as u8;
+                    }
+                    _ => {
+                        // For special tools (Blur, Sharpen, etc.), execute fallback stamp
+                    }
+                }
+            }
         }
     }
 }

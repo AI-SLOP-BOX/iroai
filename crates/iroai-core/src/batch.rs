@@ -1,8 +1,7 @@
 use crate::action::ActionSequence;
-use crate::document::Document;
 use crate::io::ImageIo;
 use crate::psd::PsdHandler;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

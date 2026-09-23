@@ -11,8 +11,17 @@ pub struct PixelBuffer {
 }
 
 impl PixelBuffer {
+    /// Safely computes the buffer size with overflow checks.
+    #[inline]
+    pub fn compute_buffer_size(width: u32, height: u32) -> Result<usize, String> {
+        (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| format!("Canvas dimension overflow: {}x{}", width, height))
+    }
+
     pub fn new(width: u32, height: u32) -> Self {
-        let size = (width as usize) * (height as usize) * 4;
+        let size = Self::compute_buffer_size(width, height).unwrap_or(0);
         Self {
             width,
             height,
@@ -21,7 +30,7 @@ impl PixelBuffer {
     }
 
     pub fn from_raw(width: u32, height: u32, data: Vec<u8>) -> Result<Self, String> {
-        let expected = (width as usize) * (height as usize) * 4;
+        let expected = Self::compute_buffer_size(width, height)?;
         if data.len() != expected {
             return Err(format!("Buffer size mismatch: got {}, expected {}", data.len(), expected));
         }
@@ -29,7 +38,7 @@ impl PixelBuffer {
     }
 
     pub fn from_color(width: u32, height: u32, color: Color) -> Self {
-        let count = (width as usize) * (height as usize);
+        let count = (width as usize).checked_mul(height as usize).unwrap_or(0);
         let mut data = Vec::with_capacity(count * 4);
         let pixel = [color.r, color.g, color.b, color.a];
         for _ in 0..count {

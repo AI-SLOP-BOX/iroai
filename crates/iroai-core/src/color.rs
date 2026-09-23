@@ -23,17 +23,23 @@ impl Color {
         Self { r, g, b, a }
     }
 
-    /// sRGB 8-bit から Linear RGB f32 (0.0 ..= 1.0) への変換
+    /// sRGB 8-bit から Linear RGB f32 (0.0 ..= 1.0) への高速LUT変換
     pub fn to_linear_f32(&self) -> (f32, f32, f32, f32) {
-        let to_lin = |v: u8| -> f32 {
-            let s = v as f32 / 255.0;
-            if s <= 0.04045 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
+        static SRGB_TO_LINEAR_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+            let mut table = [0.0f32; 256];
+            for i in 0..256 {
+                let s = i as f32 / 255.0;
+                table[i] = if s <= 0.04045 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                };
             }
-        };
-        (to_lin(self.r), to_lin(self.g), to_lin(self.b), self.a as f32 / 255.0)
+            table
+        });
+
+        let lut = &*SRGB_TO_LINEAR_LUT;
+        (lut[self.r as usize], lut[self.g as usize], lut[self.b as usize], self.a as f32 / 255.0)
     }
 
     /// Linear RGB f32 (0.0 ..= 1.0) から sRGB 8-bit への変換

@@ -1,6 +1,6 @@
 use crate::document::Document;
 use crate::io::{ImageIo, IoError};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,9 +40,9 @@ impl Clut3D {
         }
 
         let max_idx = (n - 1) as f32;
-        let rx = (r.clamp(0.0, 1.0) * max_idx);
-        let gy = (g.clamp(0.0, 1.0) * max_idx);
-        let bz = (b.clamp(0.0, 1.0) * max_idx);
+        let rx = r.clamp(0.0, 1.0) * max_idx;
+        let gy = g.clamp(0.0, 1.0) * max_idx;
+        let bz = b.clamp(0.0, 1.0) * max_idx;
 
         let x0 = rx.floor() as usize;
         let y0 = gy.floor() as usize;
