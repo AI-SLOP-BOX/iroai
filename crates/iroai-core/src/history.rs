@@ -16,6 +16,14 @@ pub enum HistoryAction {
         description: String,
         patches: Vec<TilePatch>,
     },
+    LayerCreated {
+        index: usize,
+        id: LayerId,
+        name: String,
+        width: u32,
+        height: u32,
+        kind: crate::layer::LayerKind,
+    },
     LayerAdded {
         index: usize,
         layer: Box<crate::layer::Layer>,
@@ -36,6 +44,7 @@ impl HistoryAction {
             HistoryAction::PixelChange { patches, .. } => {
                 patches.iter().map(|p| p.before_data.len() + p.after_data.len()).sum()
             }
+            HistoryAction::LayerCreated { .. } => 128,
             HistoryAction::LayerAdded { layer, .. } | HistoryAction::LayerRemoved { layer, .. } => {
                 layer.buffer.data.len()
             }

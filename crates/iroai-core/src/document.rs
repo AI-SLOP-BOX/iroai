@@ -84,22 +84,38 @@ impl Document {
     }
 
     pub fn add_layer(&mut self, name: impl Into<String>) -> LayerId {
-        let layer = Layer::new_empty(self.width, self.height, name);
+        let name_str = name.into();
+        let layer = Layer::new_empty(self.width, self.height, name_str.clone());
         let id = layer.id;
         let index = self.layers.len();
-        self.layers.push(layer.clone());
+        self.layers.push(layer);
         self.active_layer_id = Some(id);
-        self.history.push(HistoryAction::LayerAdded { index, layer: Box::new(layer) });
+        self.history.push(HistoryAction::LayerCreated {
+            index,
+            id,
+            name: name_str,
+            width: self.width,
+            height: self.height,
+            kind: crate::layer::LayerKind::Raster,
+        });
         id
     }
 
     pub fn add_adjustment_layer(&mut self, name: impl Into<String>, kind: crate::layer::AdjustmentKind) -> LayerId {
-        let layer = Layer::new_adjustment(name, kind, self.width, self.height);
+        let name_str = name.into();
+        let layer = Layer::new_adjustment(name_str.clone(), kind.clone(), self.width, self.height);
         let id = layer.id;
         let index = self.layers.len();
-        self.layers.push(layer.clone());
+        self.layers.push(layer);
         self.active_layer_id = Some(id);
-        self.history.push(HistoryAction::LayerAdded { index, layer: Box::new(layer) });
+        self.history.push(HistoryAction::LayerCreated {
+            index,
+            id,
+            name: name_str,
+            width: self.width,
+            height: self.height,
+            kind: crate::layer::LayerKind::Adjustment(kind),
+        });
         id
     }
 
@@ -320,7 +336,7 @@ impl Document {
                     }
                     true
                 }
-                HistoryAction::LayerAdded { index, .. } => {
+                HistoryAction::LayerCreated { index, .. } | HistoryAction::LayerAdded { index, .. } => {
                     if index < self.layers.len() {
                         self.layers.remove(index);
                         self.active_layer_id = self.layers.last().map(|l| l.id);
@@ -359,6 +375,17 @@ impl Document {
                             layer.buffer.restore_tile(patch.tile_x, patch.tile_y, &patch.after_data);
                         }
                     }
+                    true
+                }
+                HistoryAction::LayerCreated { index, id, name, width, height, kind } => {
+                    let mut layer = match kind {
+                        crate::layer::LayerKind::Adjustment(adj) => Layer::new_adjustment(name, adj, width, height),
+                        _ => Layer::new_empty(width, height, name),
+                    };
+                    layer.id = id;
+                    let insert_pos = index.min(self.layers.len());
+                    self.active_layer_id = Some(id);
+                    self.layers.insert(insert_pos, layer);
                     true
                 }
                 HistoryAction::LayerAdded { index, layer } => {
