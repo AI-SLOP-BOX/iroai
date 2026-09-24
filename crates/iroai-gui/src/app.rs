@@ -223,6 +223,11 @@ impl eframe::App for IroaiApp {
             });
         });
 
+        // 1.5 水平コンテキスト・ツールオプションバー (Photoshop風)
+        egui::TopBottomPanel::top("tool_options_bar").show(ctx, |ui| {
+            Panels::render_tool_options_bar(ui, &mut self.brush);
+        });
+
         // 2. ドキュメントタブバー (複数ドキュメント切り替え)
         egui::TopBottomPanel::top("doc_tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {

@@ -8,6 +8,87 @@ use iroai_core::{
 pub struct Panels;
 
 impl Panels {
+    /// 水平コンテキスト・ツールオプションバー（Photoshopのトップ下部プロパティバー）
+    pub fn render_tool_options_bar(ui: &mut Ui, brush: &mut Brush) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
+
+            let tool_name = match brush.tool {
+                BrushTool::Pen => "✒ Pen",
+                BrushTool::Brush => "🖌 Brush",
+                BrushTool::Eraser => "🧹 Eraser",
+                BrushTool::CloneStamp => "📑 Clone Stamp",
+                BrushTool::Blur => "💧 Blur",
+                BrushTool::Sharpen => "🔺 Sharpen",
+                BrushTool::Dodge => "☀️ Dodge",
+                BrushTool::Burn => "🌑 Burn",
+                BrushTool::Sponge => "🧽 Sponge",
+                BrushTool::Eyedropper => "🔍 Eyedropper",
+                BrushTool::Bucket => "🪣 Bucket",
+                BrushTool::RectSelect => "🔲 Rect Marquee",
+                BrushTool::EllipseSelect => "⚪ Ellipse Marquee",
+                BrushTool::LassoSelect => "➰ Lasso",
+                BrushTool::Line => "📏 Line",
+                BrushTool::ShapeRect => "⬜ Rectangle",
+            };
+            ui.label(egui::RichText::new(tool_name).strong().color(Color32::from_rgb(220, 220, 220)));
+            ui.separator();
+
+            match brush.tool {
+                BrushTool::Brush | BrushTool::Eraser | BrushTool::CloneStamp | BrushTool::Pen => {
+                    ui.label("Size:");
+                    ui.add(egui::Slider::new(&mut brush.size, 1.0..=200.0).suffix(" px").logarithmic(true));
+
+                    ui.label("Hardness:");
+                    ui.add(egui::Slider::new(&mut brush.hardness, 0.0..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+
+                    ui.label("Opacity:");
+                    ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+
+                    ui.label("Flow:");
+                    ui.add(egui::Slider::new(&mut brush.flow, 0.01..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+
+                    ui.label("Spacing:");
+                    ui.add(egui::Slider::new(&mut brush.spacing, 0.05..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+
+                    ui.separator();
+                    ui.checkbox(&mut brush.pressure_size, "Pen Pressure");
+                }
+                BrushTool::Blur | BrushTool::Sharpen | BrushTool::Dodge | BrushTool::Burn | BrushTool::Sponge => {
+                    ui.label("Size:");
+                    ui.add(egui::Slider::new(&mut brush.size, 1.0..=200.0).suffix(" px"));
+                    ui.label("Strength:");
+                    ui.add(egui::Slider::new(&mut brush.flow, 0.01..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+                }
+                BrushTool::RectSelect | BrushTool::EllipseSelect | BrushTool::LassoSelect => {
+                    ui.label("Mode: New Selection");
+                    ui.separator();
+                    ui.label("Feather: 0 px");
+                    ui.separator();
+                    ui.label("Anti-alias: On");
+                }
+                BrushTool::Bucket => {
+                    ui.label("Tolerance: 20");
+                    ui.separator();
+                    ui.label("Contiguous: On");
+                    ui.separator();
+                    ui.label("All Layers: Off");
+                }
+                BrushTool::Eyedropper => {
+                    ui.label("Sample: All Layers");
+                    ui.separator();
+                    ui.label("Sample Size: Point Sample");
+                }
+                BrushTool::Line | BrushTool::ShapeRect => {
+                    ui.label("Stroke Width:");
+                    ui.add(egui::Slider::new(&mut brush.size, 1.0..=50.0).suffix(" px"));
+                    ui.separator();
+                    ui.label("Anti-alias: On");
+                }
+            }
+        });
+    }
+
     /// 左ツールバー（Photoshop準拠の2列コンパクト・アイコンパレット）
     pub fn render_toolbar(ui: &mut Ui, brush: &mut Brush) {
         ui.vertical(|ui| {

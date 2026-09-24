@@ -65,11 +65,11 @@ impl CanvasWidget {
         let image = ColorImage::from_rgba_unmultiplied([w, h], &composite.data);
 
         let texture = state.texture.get_or_insert_with(|| {
-            ui.ctx().load_texture("canvas_composite", image.clone(), TextureOptions::NEAREST)
+            ui.ctx().load_texture("canvas_composite", image.clone(), TextureOptions::LINEAR)
         });
 
         if state.texture_version != doc.history.undo_count() as u64 {
-            texture.set(image, TextureOptions::NEAREST);
+            texture.set(image, TextureOptions::LINEAR);
             state.texture_version = doc.history.undo_count() as u64;
         }
 
@@ -121,6 +121,18 @@ impl CanvasWidget {
         // 5. 1px hairline canvas boundary border
         painter.rect_stroke(canvas_rect, 0.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 60)));
 
+        let is_space_down = ui.input(|i| i.key_down(egui::Key::Space));
+
+        if is_space_down {
+            if response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                state.pan += response.drag_delta();
+            } else {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            state.last_pos = None;
+        }
+
         // 5. ポインター入力・描画処理
         if let Some(pos) = response.hover_pos() {
             if canvas_rect.contains(pos) {
@@ -133,40 +145,73 @@ impl CanvasWidget {
                     state.hovered_pixel_info = Some((px, py, col));
                 }
 
-                let mut ev = PointerEvent::new(px as f32, py as f32);
-                ev.pressure = 1.0;
-                ev.tool = brush.tool;
-
-                if response.drag_started() {
-                    state.last_pos = Some(pos);
-
-                    if brush.tool == BrushTool::Eyedropper {
-                        if let Some((_, _, col)) = state.hovered_pixel_info {
-                            brush.color = col;
+                if !is_space_down {
+                    // ブラシ・消しゴム等のカーソルプレビュー円を描画 (Photoshop / クリスタ風)
+                    match brush.tool {
+                        BrushTool::Brush | BrushTool::Eraser | BrushTool::Pen => {
+                            let radius = (brush.size * state.zoom * 0.5).max(2.0);
+                            // 外枠 (サイズ)
+                            painter.circle_stroke(
+                                pos,
+                                radius,
+                                egui::Stroke::new(1.0_f32, Color32::from_white_alpha(200)),
+                            );
+                            // 硬さ（Hardness）のインナー円プレビュー (Hardness < 1.0 の場合)
+                            if brush.hardness < 0.99  {
+                                let inner_radius = radius * brush.hardness;
+                                if inner_radius > 1.0 {
+                                    painter.circle_stroke(
+                                        pos,
+                                        inner_radius,
+                                        egui::Stroke::new(0.8_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+                                    );
+                                }
+                            }
+                            // センタードット
+                            painter.circle_filled(pos, 1.0, Color32::from_white_alpha(220));
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                         }
-                    } else if brush.tool == BrushTool::Bucket {
-                        if let Some(layer) = doc.active_layer_mut() {
-                            iroai_core::Filters::flood_fill(&mut layer.buffer, px, py, brush.color, 20);
+                        BrushTool::Eyedropper => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                         }
-                    } else if brush.tool == BrushTool::RectSelect {
-                        doc.selection.select_rect(px.saturating_sub(10), py.saturating_sub(10), 20, 20, SelectionOp::New);
-                    } else if let Some(layer) = doc.active_layer_mut() {
-                        brush.paint_pointer_stamp(&mut layer.buffer, &ev);
+                        _ => {}
                     }
-                } else if response.dragged() {
-                    if let Some(prev) = state.last_pos {
-                        let prev_nx = (prev.x - canvas_rect.min.x) / canvas_rect.width();
-                        let prev_ny = (prev.y - canvas_rect.min.y) / canvas_rect.height();
-                        let ppx = prev_nx * doc.width as f32;
-                        let ppy = prev_ny * doc.height as f32;
 
-                        if let Some(layer) = doc.active_layer_mut() {
-                            brush.paint_line(&mut layer.buffer, ppx, ppy, px as f32, py as f32);
+                    let mut ev = PointerEvent::new(px as f32, py as f32);
+                    ev.pressure = 1.0;
+                    ev.tool = brush.tool;
+
+                    if response.drag_started() {
+                        state.last_pos = Some(pos);
+
+                        if brush.tool == BrushTool::Eyedropper {
+                            if let Some((_, _, col)) = state.hovered_pixel_info {
+                                brush.color = col;
+                            }
+                        } else if brush.tool == BrushTool::Bucket {
+                            if let Some(layer) = doc.active_layer_mut() {
+                                iroai_core::Filters::flood_fill(&mut layer.buffer, px, py, brush.color, 20);
+                            }
+                        } else if brush.tool == BrushTool::RectSelect {
+                            doc.selection.select_rect(px.saturating_sub(10), py.saturating_sub(10), 20, 20, SelectionOp::New);
+                        } else if let Some(layer) = doc.active_layer_mut() {
+                            brush.paint_pointer_stamp(&mut layer.buffer, &ev);
                         }
+                    } else if response.dragged() {
+                        if let Some(prev) = state.last_pos {
+                            let prev_nx = (prev.x - canvas_rect.min.x) / canvas_rect.width();
+                            let prev_ny = (prev.y - canvas_rect.min.y) / canvas_rect.height();
+                            let ppx = prev_nx * doc.width as f32;
+                            let ppy = prev_ny * doc.height as f32;
+
+                            if let Some(layer) = doc.active_layer_mut() {
+                                brush.paint_line(&mut layer.buffer, ppx, ppy, px as f32, py as f32);
+                            }
+                        }
+                        state.last_pos = Some(pos);
+                    } else if response.drag_stopped() {
+                        state.last_pos = None;
                     }
-                    state.last_pos = Some(pos);
-                } else if response.drag_stopped() {
-                    state.last_pos = None;
                 }
             } else {
                 state.hovered_pixel_info = None;
