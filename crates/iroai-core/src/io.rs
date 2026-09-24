@@ -232,6 +232,7 @@ impl ImageIo {
                 name: meta.name,
                 visible: meta.visible,
                 locked: meta.locked,
+                lock_alpha: false,
                 opacity: meta.opacity,
                 blend_mode: meta.blend_mode,
                 buffer,

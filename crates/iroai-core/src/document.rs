@@ -119,6 +119,20 @@ impl Document {
         id
     }
 
+
+    pub fn move_layer(&mut self, from_idx: usize, to_idx: usize) -> bool {
+        if from_idx >= self.layers.len() || to_idx >= self.layers.len() || from_idx == to_idx {
+            return false;
+        }
+        let layer = self.layers.remove(from_idx);
+        self.layers.insert(to_idx, layer);
+        self.history.push(HistoryAction::LayerReordered {
+            from: from_idx,
+            to: to_idx,
+        });
+        true
+    }
+
     pub fn duplicate_layer(&mut self, id: LayerId) -> Option<LayerId> {
         if let Some(pos) = self.layers.iter().position(|l| l.id == id) {
             let dup = self.layers[pos].duplicate();

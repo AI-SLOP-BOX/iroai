@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MoufuMessage {
@@ -23,14 +27,12 @@ pub enum MoufuMessage {
         action_json: String,
         target_path: String,
     },
-    /// Synchronize ICC Color Profile across creative suite pipeline
     SyncIccProfile {
         document_id: String,
         profile_name: String,
         color_space: String,
         icc_raw_base64: String,
     },
-    /// Stream virtual swapped scratch tile or asset metadata to companion apps
     StreamTileAsset {
         document_id: String,
         tile_x: u32,
@@ -40,33 +42,83 @@ pub enum MoufuMessage {
     },
 }
 
+/// Zero-latency background asynchronous IPC client
 pub struct MoufuClient {
     pub is_connected: bool,
     pub endpoint: String,
+    sender: Option<Sender<MoufuMessage>>,
+    connected_flag: Arc<Mutex<bool>>,
 }
 
 impl Default for MoufuClient {
     fn default() -> Self {
-        Self {
-            is_connected: false,
-            endpoint: "127.0.0.1:49200".to_string(),
-        }
+        Self::new()
     }
 }
 
 impl MoufuClient {
     pub fn new() -> Self {
-        Self::default()
+        let (tx, rx): (Sender<MoufuMessage>, Receiver<MoufuMessage>) = mpsc::channel();
+        let connected_flag = Arc::new(Mutex::new(false));
+        let flag_clone = Arc::clone(&connected_flag);
+        let endpoint = "127.0.0.1:49200".to_string();
+        let ep_clone = endpoint.clone();
+
+        // Spawn dedicated background worker thread so the UI thread NEVER blocks
+        thread::Builder::new()
+            .name("moufu-ipc-worker".into())
+            .spawn(move || {
+                let mut active_stream: Option<std::net::TcpStream> = None;
+
+                while let Ok(msg) = rx.recv() {
+                    // Try to send or reconnect in background
+                    let json = match serde_json::to_string(&msg) {
+                        Ok(j) => j,
+                        Err(_) => continue,
+                    };
+
+                    use std::io::Write;
+                    let mut sent = false;
+
+                    if let Some(ref mut s) = active_stream {
+                        if writeln!(s, "{}", json).is_ok() {
+                            sent = true;
+                        } else {
+                            active_stream = None;
+                        }
+                    }
+
+                    if !sent {
+                        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+                            &ep_clone.parse().unwrap_or_else(|_| "127.0.0.1:49200".parse().unwrap()),
+                            Duration::from_millis(50),
+                        ) {
+                            let _ = writeln!(stream, "{}", json);
+                            active_stream = Some(stream);
+                            if let Ok(mut f) = flag_clone.lock() {
+                                *f = true;
+                            }
+                        } else if let Ok(mut f) = flag_clone.lock() {
+                            *f = false;
+                        }
+                    }
+                }
+            })
+            .ok();
+
+        Self {
+            is_connected: false,
+            endpoint,
+            sender: Some(tx),
+            connected_flag,
+        }
     }
 
     pub fn try_connect(&mut self) -> bool {
-        if let Ok(_stream) = std::net::TcpStream::connect(&self.endpoint) {
-            self.is_connected = true;
-            true
-        } else {
-            self.is_connected = false;
-            false
+        if let Ok(f) = self.connected_flag.lock() {
+            self.is_connected = *f;
         }
+        self.is_connected
     }
 
     pub fn notify_document_change(&self, doc_id: &str, title: &str) {
@@ -77,9 +129,7 @@ impl MoufuClient {
         let _ = self.send_message(msg);
     }
 
-    /// Broadcast ICC profile metadata to other tools in the Moufu creative ecosystem
     pub fn broadcast_icc_profile(&self, doc_id: &str, name: &str, color_space: &str, raw_bytes: &[u8]) {
-        // Simple hex representation of raw bytes
         let hex = raw_bytes.iter().map(|b| format!("{:02x}", b)).collect();
         let msg = MoufuMessage::SyncIccProfile {
             document_id: doc_id.to_string(),
@@ -90,7 +140,6 @@ impl MoufuClient {
         let _ = self.send_message(msg);
     }
 
-    /// Broadcast streamed tile sync event
     pub fn broadcast_streamed_tile(&self, doc_id: &str, tx: u32, ty: u32, bytes_len: usize) {
         let msg = MoufuMessage::StreamTileAsset {
             document_id: doc_id.to_string(),
@@ -102,15 +151,10 @@ impl MoufuClient {
         let _ = self.send_message(msg);
     }
 
+    /// Completely non-blocking dispatch to background channel
     pub fn send_message(&self, message: MoufuMessage) -> Result<(), String> {
-        if !self.is_connected {
-            return Ok(());
-        }
-        if let Ok(mut stream) = std::net::TcpStream::connect(&self.endpoint) {
-            use std::io::Write;
-            if let Ok(json) = serde_json::to_string(&message) {
-                let _ = writeln!(stream, "{}", json);
-            }
+        if let Some(tx) = &self.sender {
+            tx.send(message).map_err(|e| e.to_string())?;
         }
         Ok(())
     }

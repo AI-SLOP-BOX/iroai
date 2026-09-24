@@ -128,72 +128,95 @@ impl Filters {
         }
     }
 
+    /// Professional Gaussian Blur with Clamp-to-Edge boundary condition and Alpha-Weighted Normalization.
+    /// Prevents dark edges and boundary shrinkage.
     pub fn apply_gaussian_blur(buffer: &mut PixelBuffer, radius: u32) {
-        if radius == 0 {
+        if radius == 0 || buffer.width == 0 || buffer.height == 0 {
             return;
         }
         let w = buffer.width as usize;
         let h = buffer.height as usize;
         let r = radius as i32;
 
-        let mut temp = buffer.data.clone();
+        // Precompute 1D Gaussian kernel
+        let sigma = (radius as f32) / 2.0;
+        let two_sigma_sq = 2.0 * sigma * sigma;
+        let mut kernel = Vec::with_capacity((r * 2 + 1) as usize);
+        for i in -r..=r {
+            let weight = (-((i * i) as f32) / two_sigma_sq).exp();
+            kernel.push(weight);
+        }
 
-        // 水平
+        let mut temp = vec![0.0f32; w * h * 4];
+
+        // Horizontal Pass (Clamp-to-edge + alpha weighted)
         for y in 0..h {
-            let row_offset = y * w * 4;
+            let row_offset = y * w;
             for x in 0..w {
-                let mut sum_r = 0u32;
-                let mut sum_g = 0u32;
-                let mut sum_b = 0u32;
-                let mut sum_a = 0u32;
-                let mut count = 0u32;
+                let mut sum_r = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_b = 0.0f32;
+                let mut sum_a = 0.0f32;
+                let mut total_w = 0.0f32;
 
-                for dx in -r..=r {
-                    let nx = x as i32 + dx;
-                    if nx >= 0 && nx < w as i32 {
-                        let idx = row_offset + (nx as usize) * 4;
-                        sum_r += buffer.data[idx] as u32;
-                        sum_g += buffer.data[idx + 1] as u32;
-                        sum_b += buffer.data[idx + 2] as u32;
-                        sum_a += buffer.data[idx + 3] as u32;
-                        count += 1;
-                    }
+                for (idx, &k_w) in kernel.iter().enumerate() {
+                    let dx = -r + idx as i32;
+                    let nx = (x as i32 + dx).clamp(0, (w - 1) as i32) as usize;
+                    let p_idx = (row_offset + nx) * 4;
+
+                    let a = buffer.data[p_idx + 3] as f32 / 255.0;
+                    let eff_w = k_w * a;
+
+                    sum_r += buffer.data[p_idx] as f32 * eff_w;
+                    sum_g += buffer.data[p_idx + 1] as f32 * eff_w;
+                    sum_b += buffer.data[p_idx + 2] as f32 * eff_w;
+                    sum_a += buffer.data[p_idx + 3] as f32 * k_w;
+                    total_w += eff_w;
                 }
 
-                let dst_idx = row_offset + x * 4;
-                temp[dst_idx] = (sum_r / count) as u8;
-                temp[dst_idx + 1] = (sum_g / count) as u8;
-                temp[dst_idx + 2] = (sum_b / count) as u8;
-                temp[dst_idx + 3] = (sum_a / count) as u8;
+                let dst_idx = (row_offset + x) * 4;
+                let norm = if total_w > 0.001 { total_w } else { 1.0 };
+                let k_norm: f32 = kernel.iter().sum();
+
+                temp[dst_idx] = sum_r / norm;
+                temp[dst_idx + 1] = sum_g / norm;
+                temp[dst_idx + 2] = sum_b / norm;
+                temp[dst_idx + 3] = sum_a / k_norm;
             }
         }
 
-        // 垂直
+        // Vertical Pass (Clamp-to-edge + alpha weighted)
         for y in 0..h {
             for x in 0..w {
-                let mut sum_r = 0u32;
-                let mut sum_g = 0u32;
-                let mut sum_b = 0u32;
-                let mut sum_a = 0u32;
-                let mut count = 0u32;
+                let mut sum_r = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_b = 0.0f32;
+                let mut sum_a = 0.0f32;
+                let mut total_w = 0.0f32;
 
-                for dy in -r..=r {
-                    let ny = y as i32 + dy;
-                    if ny >= 0 && ny < h as i32 {
-                        let idx = ((ny as usize) * w + x) * 4;
-                        sum_r += temp[idx] as u32;
-                        sum_g += temp[idx + 1] as u32;
-                        sum_b += temp[idx + 2] as u32;
-                        sum_a += temp[idx + 3] as u32;
-                        count += 1;
-                    }
+                for (idx, &k_w) in kernel.iter().enumerate() {
+                    let dy = -r + idx as i32;
+                    let ny = (y as i32 + dy).clamp(0, (h - 1) as i32) as usize;
+                    let p_idx = (ny * w + x) * 4;
+
+                    let a = temp[p_idx + 3] / 255.0;
+                    let eff_w = k_w * a;
+
+                    sum_r += temp[p_idx] * eff_w;
+                    sum_g += temp[p_idx + 1] * eff_w;
+                    sum_b += temp[p_idx + 2] * eff_w;
+                    sum_a += temp[p_idx + 3] * k_w;
+                    total_w += eff_w;
                 }
 
                 let dst_idx = (y * w + x) * 4;
-                buffer.data[dst_idx] = (sum_r / count) as u8;
-                buffer.data[dst_idx + 1] = (sum_g / count) as u8;
-                buffer.data[dst_idx + 2] = (sum_b / count) as u8;
-                buffer.data[dst_idx + 3] = (sum_a / count) as u8;
+                let norm = if total_w > 0.001 { total_w } else { 1.0 };
+                let k_norm: f32 = kernel.iter().sum();
+
+                buffer.data[dst_idx] = (sum_r / norm).clamp(0.0, 255.0).round() as u8;
+                buffer.data[dst_idx + 1] = (sum_g / norm).clamp(0.0, 255.0).round() as u8;
+                buffer.data[dst_idx + 2] = (sum_b / norm).clamp(0.0, 255.0).round() as u8;
+                buffer.data[dst_idx + 3] = (sum_a / k_norm).clamp(0.0, 255.0).round() as u8;
             }
         }
     }

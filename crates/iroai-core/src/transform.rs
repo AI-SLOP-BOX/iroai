@@ -193,4 +193,78 @@ impl Transform {
         Self::draw_line(buffer, x + w, y + h, x, y + h, color);
         Self::draw_line(buffer, x, y + h, x, y, color);
     }
+
+    /// Computes the bounding box of non-transparent pixels in the buffer.
+    pub fn content_bounds(buffer: &PixelBuffer) -> Option<(u32, u32, u32, u32)> {
+        let mut min_x = u32::MAX;
+        let mut max_x = 0;
+        let mut min_y = u32::MAX;
+        let mut max_y = 0;
+        let mut found = false;
+
+        for y in 0..buffer.height {
+            for x in 0..buffer.width {
+                if let Some(c) = buffer.get_pixel(x, y) {
+                    if c.a > 0 {
+                        found = true;
+                        min_x = min_x.min(x);
+                        max_x = max_x.max(x);
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+        }
+
+        if found {
+            Some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+        } else {
+            None
+        }
+    }
+
+    /// Transforms a buffer using 2D affine transformation (scale, rotate, translate).
+    /// Center of rotation and scaling is (cx, cy).
+    /// angle_rad: rotation angle in radians
+    /// scale_x, scale_y: scaling factors
+    /// offset_x, offset_y: translation delta
+    pub fn transform_affine_bicubic(
+        src: &PixelBuffer,
+        cx: f32,
+        cy: f32,
+        angle_rad: f32,
+        scale_x: f32,
+        scale_y: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) -> PixelBuffer {
+        let mut dst = PixelBuffer::new(src.width, src.height);
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+        let inv_sx = if scale_x.abs() < 1e-5 { 1.0 } else { 1.0 / scale_x };
+        let inv_sy = if scale_y.abs() < 1e-5 { 1.0 } else { 1.0 / scale_y };
+
+        for y in 0..src.height {
+            let dy = y as f32 - cy - offset_y;
+            for x in 0..src.width {
+                let dx = x as f32 - cx - offset_x;
+
+                // Inverse rotation & scale
+                let unrot_x = dx * cos_a + dy * sin_a;
+                let unrot_y = -dx * sin_a + dy * cos_a;
+
+                let src_x = unrot_x * inv_sx + cx;
+                let src_y = unrot_y * inv_sy + cy;
+
+                if src_x >= -1.0 && src_x <= src.width as f32 && src_y >= -1.0 && src_y <= src.height as f32 {
+                    let c = Self::sample_bicubic(src, src_x, src_y);
+                    if c.a > 0 {
+                        dst.set_pixel(x, y, c);
+                    }
+                }
+            }
+        }
+        dst
+    }
+
 }

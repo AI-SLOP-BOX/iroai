@@ -58,20 +58,23 @@ impl CanvasWidget {
             state.pan += scroll_delta;
         }
 
-        // 3. テクスチャのアップロード / 更新
-        let composite = doc.composite();
-        let w = composite.width as usize;
-        let h = composite.height as usize;
-        let image = ColorImage::from_rgba_unmultiplied([w, h], &composite.data);
+        // 3. テクスチャのアップロード / 更新 (ゼロコピー・遅延評価: 変更時のみ composite & upload)
+        let needs_texture_update = state.texture.is_none() || state.texture_version != doc.history.undo_count() as u64;
+        if needs_texture_update {
+            let composite = doc.composite();
+            let w = composite.width as usize;
+            let h = composite.height as usize;
+            let image = ColorImage::from_rgba_unmultiplied([w, h], &composite.data);
 
-        let texture = state.texture.get_or_insert_with(|| {
-            ui.ctx().load_texture("canvas_composite", image.clone(), TextureOptions::LINEAR)
-        });
-
-        if state.texture_version != doc.history.undo_count() as u64 {
-            texture.set(image, TextureOptions::LINEAR);
+            if let Some(tex) = &mut state.texture {
+                tex.set(image, TextureOptions::LINEAR);
+            } else {
+                state.texture = Some(ui.ctx().load_texture("canvas_composite", image, TextureOptions::LINEAR));
+            }
             state.texture_version = doc.history.undo_count() as u64;
         }
+
+        let texture = state.texture.as_ref().unwrap();
 
         // 4. キャンバス描画領域の計算 (アスペクト比維持・センタリング)
         let center = rect.center() + state.pan;
@@ -141,8 +144,10 @@ impl CanvasWidget {
                 let px = (norm_x * doc.width as f32) as u32;
                 let py = (norm_y * doc.height as f32) as u32;
 
-                if let Some(col) = composite.get_pixel(px, py) {
-                    state.hovered_pixel_info = Some((px, py, col));
+                if let Some(layer) = doc.active_layer() {
+                    if let Some(col) = layer.buffer.get_pixel(px, py) {
+                        state.hovered_pixel_info = Some((px, py, col));
+                    }
                 }
 
                 if !is_space_down {

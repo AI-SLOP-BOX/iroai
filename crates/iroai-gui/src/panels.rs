@@ -53,6 +53,8 @@ impl Panels {
 
                     ui.separator();
                     ui.checkbox(&mut brush.pressure_size, "Pen Pressure");
+                    ui.separator();
+                    ui.checkbox(&mut brush.lock_alpha, "🔒 Lock Alpha");
                 }
                 BrushTool::Blur | BrushTool::Sharpen | BrushTool::Dodge | BrushTool::Burn | BrushTool::Sponge => {
                     ui.label("Size:");
@@ -128,10 +130,22 @@ impl Panels {
             ui.add_space(8.0);
             ui.separator();
 
-            // Color Swatch
-            let (rect_fg, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), egui::Sense::hover());
+            // Color Swatch with HSV Wheel popup
+            let (rect_fg, resp_fg) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), egui::Sense::click());
             ui.painter().rect_filled(rect_fg, 2.0, Color32::from_rgba_unmultiplied(brush.color.r, brush.color.g, brush.color.b, brush.color.a));
-            ui.painter().rect_stroke(rect_fg, 2.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 80)));
+            ui.painter().rect_stroke(rect_fg, 2.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(140, 140, 140)));
+            resp_fg.clone().on_hover_text("Foreground Color (Click to open HSV Color Wheel)");
+
+            let popup_id = ui.make_persistent_id("color_picker_popup");
+            if resp_fg.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
+            }
+            egui::popup_below_widget(ui, popup_id, &resp_fg, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(220.0);
+                ui.heading("Color Wheel");
+                ui.separator();
+                crate::color_picker::ColorPickerWheel::show(ui, &mut brush.color);
+            });
         });
     }
 
@@ -148,6 +162,7 @@ impl Panels {
             ui.add(egui::Slider::new(&mut brush.spacing, 0.01..=1.0).text("Spacing"));
             ui.checkbox(&mut brush.pressure_size, "Pressure Size");
             ui.checkbox(&mut brush.pressure_opacity, "Pressure Opacity");
+            ui.checkbox(&mut brush.lock_alpha, "🔒 Lock Transparent Pixels (Alpha Lock)");
         });
     }
 
@@ -305,6 +320,17 @@ impl Panels {
                     ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).show_value(false));
                 });
 
+                ui.horizontal(|ui| {
+                    let mut lock_a = layer.lock_alpha;
+                    if ui.checkbox(&mut lock_a, "🔒 Lock Transparent").changed() {
+                        layer.lock_alpha = lock_a;
+                    }
+                    let mut is_locked = layer.locked;
+                    if ui.checkbox(&mut is_locked, "Lock All").changed() {
+                        layer.locked = is_locked;
+                    }
+                });
+
                 ui.collapsing("✨ Layer Style", |ui| {
                     let mut has_style = layer.style.is_some();
                     if ui.checkbox(&mut has_style, "Enable Layer Effects").changed() {
@@ -348,10 +374,16 @@ impl Panels {
                 ui.separator();
             }
 
-            // フィルタリングされたレイヤーリスト
+            // フィルタリングされたレイヤーリスト (D&D / 並べ替え対応)
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut layer_to_select = None;
-                for layer in doc.layers.iter_mut().rev() {
+                let mut move_op: Option<(usize, usize)> = None;
+                let num_layers = doc.layers.len();
+
+                for rev_idx in 0..num_layers {
+                    let actual_idx = num_layers - 1 - rev_idx;
+                    let layer = &mut doc.layers[actual_idx];
+
                     if !search_query.is_empty() && !layer.name.to_lowercase().contains(&search_query.to_lowercase()) {
                         continue;
                     }
@@ -365,15 +397,33 @@ impl Panels {
                         }
 
                         let clip_prefix = if layer.clipping_mask { "  ↳ " } else { "" };
-                        let name_label = format!("{}{}", clip_prefix, layer.name);
+                        let lock_icon = if layer.lock_alpha { "🔒 " } else { "" };
+                        let name_label = format!("{}{}{}", clip_prefix, lock_icon, layer.name);
 
                         if ui.selectable_label(is_active, name_label).clicked() {
                             layer_to_select = Some(layer.id);
                         }
+
+                        // クイック移動ボタン (D&D代替・即応性)
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if actual_idx < num_layers - 1 {
+                                if ui.small_button("▲").on_hover_text("Move Layer Up").clicked() {
+                                    move_op = Some((actual_idx, actual_idx + 1));
+                                }
+                            }
+                            if actual_idx > 0 {
+                                if ui.small_button("▼").on_hover_text("Move Layer Down").clicked() {
+                                    move_op = Some((actual_idx, actual_idx - 1));
+                                }
+                            }
+                        });
                     });
                 }
                 if let Some(new_id) = layer_to_select {
                     doc.active_layer_id = Some(new_id);
+                }
+                if let Some((from, to)) = move_op {
+                    doc.move_layer(from, to);
                 }
             });
         });

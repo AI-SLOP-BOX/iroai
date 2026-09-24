@@ -1,3 +1,5 @@
+pub mod color_picker;
+pub mod transform_tool;
 pub mod app;
 pub mod canvas;
 pub mod panels;

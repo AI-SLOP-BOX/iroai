@@ -76,6 +76,7 @@ pub struct Brush {
     pub spacing: f32,
     pub pressure_size: bool,
     pub pressure_opacity: bool,
+    pub lock_alpha: bool,
     pub clone_offset: (i32, i32),
 }
 
@@ -91,6 +92,7 @@ impl Default for Brush {
             spacing: 0.2,
             pressure_size: true,
             pressure_opacity: false,
+            lock_alpha: false,
             clone_offset: (0, 0),
         }
     }
@@ -149,15 +151,28 @@ impl Brush {
 
                 let cur_color = buffer.get_pixel(px, py).unwrap_or(Color::TRANSPARENT);
 
+                if self.lock_alpha && cur_color.a == 0 {
+                    continue;
+                }
+
                 match event.tool {
                     BrushTool::Brush => {
+                        let stamp_alpha = if self.lock_alpha {
+                            let max_a = cur_color.a as f32;
+                            (self.color.a as f32 * effective_alpha).min(max_a)
+                        } else {
+                            self.color.a as f32 * effective_alpha
+                        };
                         let stamp_color = Color {
                             r: self.color.r,
                             g: self.color.g,
                             b: self.color.b,
-                            a: (self.color.a as f32 * effective_alpha).round() as u8,
+                            a: stamp_alpha.round() as u8,
                         };
-                        let blended = crate::color::BlendMode::Normal.blend_pixel(cur_color, stamp_color, 1.0);
+                        let mut blended = crate::color::BlendMode::Normal.blend_pixel(cur_color, stamp_color, 1.0);
+                        if self.lock_alpha {
+                            blended.a = cur_color.a;
+                        }
                         buffer.set_pixel(px, py, blended);
                     }
                     BrushTool::Eraser => {
@@ -339,15 +354,28 @@ impl Brush {
                     buffer.data[p_idx + 3],
                 );
 
+                if self.lock_alpha && cur_color.a == 0 {
+                    continue;
+                }
+
                 match self.tool {
                     BrushTool::Brush => {
+                        let stamp_alpha = if self.lock_alpha {
+                            let max_a = cur_color.a as f32;
+                            (self.color.a as f32 * eff_alpha).min(max_a)
+                        } else {
+                            self.color.a as f32 * eff_alpha
+                        };
                         let stamp_color = Color {
                             r: self.color.r,
                             g: self.color.g,
                             b: self.color.b,
-                            a: (self.color.a as f32 * eff_alpha).round() as u8,
+                            a: stamp_alpha.round() as u8,
                         };
-                        let blended = crate::color::BlendMode::Normal.blend_pixel(cur_color, stamp_color, 1.0);
+                        let mut blended = crate::color::BlendMode::Normal.blend_pixel(cur_color, stamp_color, 1.0);
+                        if self.lock_alpha {
+                            blended.a = cur_color.a;
+                        }
                         buffer.data[p_idx] = blended.r;
                         buffer.data[p_idx + 1] = blended.g;
                         buffer.data[p_idx + 2] = blended.b;
