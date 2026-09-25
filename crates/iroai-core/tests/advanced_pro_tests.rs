@@ -26,8 +26,8 @@ fn test_tac_overrun_detection() {
     buf.set_pixel(1, 1, Color::rgb(220, 220, 220));
 
     let overrun = CmykManager::detect_tac_overrun(&buf, 90.0);
-    assert_eq!(overrun[0], true);
-    assert_eq!(overrun[3], false);
+    assert!(overrun[0]);
+    assert!(!overrun[3]);
 }
 
 #[test]

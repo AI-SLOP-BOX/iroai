@@ -1,4 +1,4 @@
-use egui::{Response, Ui, Vec2};
+use egui::{Ui, Vec2};
 use iroai_core::BrushTool;
 
 pub struct TabletLayout;

@@ -1,13 +1,14 @@
 use iroai_core::{
-    ActionCommand, ActionSequence, BatchJobConfig, BatchProcessor, ExportFormat, ImageIo,
+    ActionCommand, BatchJobConfig, BatchProcessor, Document, ImageIo,
     PhotoAdjustments, PsdHandler,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 fn print_usage() {
     println!("Iroai CLI v0.1.0 — High Precision Image Processing Engine");
     println!("Usage:");
-    println!("  iroai convert <input> <output>              Convert between image formats (PNG, JPEG, WebP, TIFF, PSD)");
+    println!("  iroai convert <input> <output>              Convert between image formats (PNG, JPEG, WebP, TIFF, PSD, .iroai)");
     println!("  iroai resize <input> <output> <w> <h>       Resize image with bilinear sampling");
     println!("  iroai crop <input> <output> <x> <y> <w> <h> Crop image region");
     println!("  iroai filter <input> <output> <blur|invert|grayscale|sharpen> Apply filter to image");
@@ -16,117 +17,122 @@ fn print_usage() {
     println!("  iroai verify <project.iroai>                Verify project integrity and layer structure");
 }
 
-fn main() {
+fn load_document(path: &Path) -> Result<Document, String> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "psd" => PsdHandler::load_psd(path).map_err(|e| format!("Failed to load PSD: {e}")),
+        "iroai" => ImageIo::load_project(path).map_err(|e| format!("Failed to load .iroai project: {e}")),
+        _ => ImageIo::load_image(path).map_err(|e| format!("Failed to load image: {e}")),
+    }
+}
+
+fn export_document(doc: &Document, path: &Path) -> Result<(), String> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+    match ext.as_str() {
+        "psd" => PsdHandler::export_psd(doc, path).map_err(|e| format!("Failed to export PSD: {e}")),
+        "jpg" | "jpeg" => ImageIo::export_jpeg(doc, path, 90).map_err(|e| format!("Failed to export JPEG: {e}")),
+        "webp" => ImageIo::export_webp(doc, path).map_err(|e| format!("Failed to export WebP: {e}")),
+        "tif" | "tiff" => ImageIo::export_tiff(doc, path).map_err(|e| format!("Failed to export TIFF: {e}")),
+        "iroai" => ImageIo::save_project(doc, path).map_err(|e| format!("Failed to save .iroai project: {e}")),
+        _ => ImageIo::export_png(doc, path).map_err(|e| format!("Failed to export PNG: {e}")),
+    }
+}
+
+fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         print_usage();
-        return;
+        return Ok(());
     }
 
     match args[1].as_str() {
         "convert" => {
             if args.len() < 4 {
-                eprintln!("Error: 'convert' requires <input> and <output>");
-                return;
+                return Err("Usage: iroai convert <input> <output>".into());
             }
             let in_path = PathBuf::from(&args[2]);
             let out_path = PathBuf::from(&args[3]);
 
             println!("Reading: {:?}", in_path);
-            let doc = if in_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("psd")).unwrap_or(false) {
-                PsdHandler::load_psd(&in_path).expect("Failed to load PSD")
-            } else {
-                ImageIo::load_image(&in_path).expect("Failed to load image")
-            };
-
-            let out_ext = out_path.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
-            match out_ext.as_str() {
-                "psd" => PsdHandler::export_psd(&doc, &out_path).expect("Failed to export PSD"),
-                "jpg" | "jpeg" => ImageIo::export_jpeg(&doc, &out_path, 90).expect("Failed to export JPEG"),
-                "webp" => ImageIo::export_webp(&doc, &out_path).expect("Failed to export WebP"),
-                "tif" | "tiff" => ImageIo::export_tiff(&doc, &out_path).expect("Failed to export TIFF"),
-                _ => ImageIo::export_png(&doc, &out_path).expect("Failed to export PNG"),
-            }
+            let doc = load_document(&in_path)?;
+            export_document(&doc, &out_path)?;
             println!("Successfully converted to {:?}", out_path);
         }
         "resize" => {
             if args.len() < 6 {
-                eprintln!("Error: 'resize' requires <input> <output> <width> <height>");
-                return;
+                return Err("Usage: iroai resize <input> <output> <width> <height>".into());
             }
             let in_path = PathBuf::from(&args[2]);
             let out_path = PathBuf::from(&args[3]);
-            let w: u32 = args[4].parse().expect("Invalid width");
-            let h: u32 = args[5].parse().expect("Invalid height");
+            let w: u32 = args[4].parse().map_err(|_| format!("Invalid width: '{}'", args[4]))?;
+            let h: u32 = args[5].parse().map_err(|_| format!("Invalid height: '{}'", args[5]))?;
 
-            let mut doc = ImageIo::load_image(&in_path).expect("Failed to load image");
+            let mut doc = load_document(&in_path)?;
             let cmd = ActionCommand::Resize { width: w, height: h };
-            cmd.execute(&mut doc).expect("Failed to execute resize");
-            ImageIo::export_png(&doc, &out_path).expect("Failed to export PNG");
+            cmd.execute(&mut doc).map_err(|e| format!("Failed to execute resize: {e}"))?;
+            export_document(&doc, &out_path)?;
             println!("Resized to {}x{} -> {:?}", w, h, out_path);
         }
         "crop" => {
             if args.len() < 8 {
-                eprintln!("Error: 'crop' requires <input> <output> <x> <y> <width> <height>");
-                return;
+                return Err("Usage: iroai crop <input> <output> <x> <y> <width> <height>".into());
             }
             let in_path = PathBuf::from(&args[2]);
             let out_path = PathBuf::from(&args[3]);
-            let x: u32 = args[4].parse().expect("Invalid x");
-            let y: u32 = args[5].parse().expect("Invalid y");
-            let w: u32 = args[6].parse().expect("Invalid width");
-            let h: u32 = args[7].parse().expect("Invalid height");
+            let x: u32 = args[4].parse().map_err(|_| format!("Invalid x: '{}'", args[4]))?;
+            let y: u32 = args[5].parse().map_err(|_| format!("Invalid y: '{}'", args[5]))?;
+            let w: u32 = args[6].parse().map_err(|_| format!("Invalid width: '{}'", args[6]))?;
+            let h: u32 = args[7].parse().map_err(|_| format!("Invalid height: '{}'", args[7]))?;
 
-            let mut doc = ImageIo::load_image(&in_path).expect("Failed to load image");
+            let mut doc = load_document(&in_path)?;
             let cmd = ActionCommand::Crop { x, y, width: w, height: h };
-            cmd.execute(&mut doc).expect("Failed to execute crop");
-            ImageIo::export_png(&doc, &out_path).expect("Failed to export PNG");
+            cmd.execute(&mut doc).map_err(|e| format!("Failed to execute crop: {e}"))?;
+            export_document(&doc, &out_path)?;
             println!("Cropped to {}x{} -> {:?}", w, h, out_path);
         }
         "filter" => {
             if args.len() < 5 {
-                eprintln!("Error: 'filter' requires <input> <output> <blur|invert|grayscale|sharpen>");
-                return;
+                return Err("Usage: iroai filter <input> <output> <blur|invert|grayscale|sharpen>".into());
             }
             let in_path = PathBuf::from(&args[2]);
             let out_path = PathBuf::from(&args[3]);
             let filter_name = &args[4];
 
-            let mut doc = ImageIo::load_image(&in_path).expect("Failed to load image");
+            let mut doc = load_document(&in_path)?;
             let cmd = match filter_name.as_str() {
                 "blur" => ActionCommand::ApplyGaussianBlur { radius: 5 },
                 "sharpen" => ActionCommand::ApplySharpen { strength: 1.5 },
                 "invert" => ActionCommand::ApplyInvert,
                 "grayscale" => ActionCommand::ApplyGrayscale,
-                _ => panic!("Unknown filter: {}", filter_name),
+                unknown => return Err(format!("Unknown filter '{}'. Expected one of: blur, invert, grayscale, sharpen", unknown)),
             };
-            cmd.execute(&mut doc).expect("Failed to execute filter");
-            ImageIo::export_png(&doc, &out_path).expect("Failed to export PNG");
+            cmd.execute(&mut doc).map_err(|e| format!("Failed to execute filter: {e}"))?;
+            export_document(&doc, &out_path)?;
             println!("Filter '{}' applied -> {:?}", filter_name, out_path);
         }
         "photo" => {
             if args.len() < 6 {
-                eprintln!("Error: 'photo' requires <input> <output> <ev> <temp>");
-                return;
+                return Err("Usage: iroai photo <input> <output> <ev> <temp>".into());
             }
             let in_path = PathBuf::from(&args[2]);
             let out_path = PathBuf::from(&args[3]);
-            let ev: f32 = args[4].parse().expect("Invalid EV");
-            let temp: f32 = args[5].parse().expect("Invalid temperature");
+            let ev: f32 = args[4].parse().map_err(|_| format!("Invalid exposure (EV): '{}'", args[4]))?;
+            let temp: f32 = args[5].parse().map_err(|_| format!("Invalid color temp: '{}'", args[5]))?;
 
-            let mut doc = ImageIo::load_image(&in_path).expect("Failed to load image");
-            let mut adj = PhotoAdjustments::default();
-            adj.exposure = ev;
-            adj.temperature = temp;
+            let mut doc = load_document(&in_path)?;
+            let adj = PhotoAdjustments {
+                exposure: ev,
+                temperature: temp,
+                ..PhotoAdjustments::default()
+            };
             let cmd = ActionCommand::ApplyPhotoAdjustments(adj);
-            cmd.execute(&mut doc).expect("Failed to execute photo adjustments");
-            ImageIo::export_png(&doc, &out_path).expect("Failed to export PNG");
+            cmd.execute(&mut doc).map_err(|e| format!("Failed to execute photo adjustments: {e}"))?;
+            export_document(&doc, &out_path)?;
             println!("Photo adjustments applied (EV: {}, Temp: {}) -> {:?}", ev, temp, out_path);
         }
         "verify" => {
             if args.len() < 3 {
-                eprintln!("Error: 'verify' requires <project.iroai>");
-                return;
+                return Err("Usage: iroai verify <project.iroai>".into());
             }
             let proj_path = PathBuf::from(&args[2]);
             match ImageIo::load_project(&proj_path) {
@@ -140,19 +146,19 @@ fn main() {
                     }
                 }
                 Err(err) => {
-                    eprintln!("Project Verification FAILED: {}", err);
-                    std::process::exit(1);
+                    return Err(format!("Project Verification FAILED: {err}"));
                 }
             }
         }
         "batch" => {
             if args.len() < 3 {
-                eprintln!("Error: 'batch' requires <config.json>");
-                return;
+                return Err("Usage: iroai batch <config.json>".into());
             }
             let config_path = PathBuf::from(&args[2]);
-            let config_str = std::fs::read_to_string(&config_path).expect("Failed to read batch config file");
-            let config: BatchJobConfig = serde_json::from_str(&config_str).expect("Failed to parse BatchJobConfig JSON");
+            let config_str = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("Failed to read batch config file {:?}: {e}", config_path))?;
+            let config: BatchJobConfig = serde_json::from_str(&config_str)
+                .map_err(|e| format!("Failed to parse BatchJobConfig JSON: {e}"))?;
 
             println!("Starting Batch Job: {} files to {:?}", config.input_files.len(), config.output_directory);
             let progress = BatchProcessor::process_batch(&config, |p| {
@@ -167,10 +173,24 @@ fn main() {
                     println!("  - {}", e);
                 }
             }
+            if progress.failed_count > 0 {
+                return Err(format!("Batch processing completed with {} failure(s)", progress.failed_count));
+            }
         }
         cmd => {
-            eprintln!("Unknown command: {}", cmd);
             print_usage();
+            return Err(format!("Unknown command: '{}'", cmd));
         }
+    }
+
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    if let Err(err) = run() {
+        eprintln!("Error: {}", err);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }

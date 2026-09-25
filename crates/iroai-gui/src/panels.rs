@@ -1,7 +1,7 @@
 use egui::{Color32, Ui, Vec2};
 use iroai_core::{
     BlendMode, Brush, BrushTool, Color, ColorChannelManager,
-    Document, DropShadow, LayerStyle,
+    Document, DropShadow, Layer, LayerStyle,
     PhotoAdjustments, PhotoProcessor, Stroke,
 };
 
@@ -30,6 +30,10 @@ impl Panels {
                 BrushTool::LassoSelect => "➰ Lasso",
                 BrushTool::Line => "📏 Line",
                 BrushTool::ShapeRect => "⬜ Rectangle",
+                BrushTool::Text => "🅃 Horizontal Type Tool",
+                BrushTool::LiquifyPush => "🌀 Liquify Forward Warp",
+                BrushTool::LiquifyBloat => "🫧 Liquify Bloat / Pinch",
+                BrushTool::SpotHealing => "🩹 Spot Healing Brush",
             };
             ui.label(egui::RichText::new(tool_name).strong().color(Color32::from_rgb(220, 220, 220)));
             ui.separator();
@@ -55,6 +59,20 @@ impl Panels {
                     ui.checkbox(&mut brush.pressure_size, "Pen Pressure");
                     ui.separator();
                     ui.checkbox(&mut brush.lock_alpha, "🔒 Lock Alpha");
+                }
+                BrushTool::SpotHealing => {
+                    ui.label("Heal Radius:");
+                    ui.add(egui::Slider::new(&mut brush.size, 4.0..=100.0).suffix(" px").logarithmic(true));
+                    ui.separator();
+                    ui.label("Type: Proximity Texture Match (Harmonic Blend)");
+                }
+                BrushTool::LiquifyPush | BrushTool::LiquifyBloat => {
+                    ui.label("Brush Size:");
+                    ui.add(egui::Slider::new(&mut brush.size, 10.0..=300.0).suffix(" px").logarithmic(true));
+                    ui.label("Pressure / Strength:");
+                    ui.add(egui::Slider::new(&mut brush.flow, 0.05..=1.0).custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+                    ui.separator();
+                    ui.label("Interactive Mesh Warp");
                 }
                 BrushTool::Blur | BrushTool::Sharpen | BrushTool::Dodge | BrushTool::Burn | BrushTool::Sponge => {
                     ui.label("Size:");
@@ -87,6 +105,14 @@ impl Panels {
                     ui.separator();
                     ui.label("Anti-alias: On");
                 }
+                BrushTool::Text => {
+                    ui.label("Font Size:");
+                    ui.add(egui::Slider::new(&mut brush.size, 1.0..=120.0).suffix(" pt").logarithmic(true));
+                    ui.separator();
+                    ui.label("Font: OpenType / TrueType Pro");
+                    ui.separator();
+                    ui.label("Anti-aliasing: Subpixel Fontdue");
+                }
             }
         });
     }
@@ -96,8 +122,13 @@ impl Panels {
         ui.vertical(|ui| {
             ui.add_space(4.0);
             let tools = [
+                (BrushTool::Pen, "✒", "Pen Tool (P)"),
+                (BrushTool::Text, "🅃", "Horizontal Type Tool (T)"),
                 (BrushTool::Brush, "🖌", "Brush Tool (B)"),
+                (BrushTool::SpotHealing, "🩹", "Spot Healing Brush (J)"),
                 (BrushTool::Eraser, "🧹", "Eraser Tool (E)"),
+                (BrushTool::LiquifyPush, "🌀", "Liquify Forward Warp (W)"),
+                (BrushTool::LiquifyBloat, "🫧", "Liquify Bloat / Pinch"),
                 (BrushTool::CloneStamp, "📑", "Clone Stamp (S)"),
                 (BrushTool::Blur, "💧", "Blur Tool"),
                 (BrushTool::Sharpen, "🔺", "Sharpen Tool"),
@@ -108,6 +139,9 @@ impl Panels {
                 (BrushTool::Bucket, "🪣", "Paint Bucket (G)"),
                 (BrushTool::RectSelect, "🔲", "Rect Marquee (M)"),
                 (BrushTool::EllipseSelect, "⚪", "Ellipse Marquee"),
+                (BrushTool::LassoSelect, "➰", "Lasso Tool (L)"),
+                (BrushTool::Line, "📏", "Line Tool"),
+                (BrushTool::ShapeRect, "⬜", "Rectangle Shape (U)"),
             ];
 
             egui::Grid::new("tool_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
@@ -263,6 +297,59 @@ impl Panels {
                     let count = doc.layers.len() + 1;
                     doc.add_layer(format!("Layer {}", count));
                 }
+                ui.menu_button("+ Adj ▾", |ui| {
+                    let w = doc.width;
+                    let h = doc.height;
+                    if ui.button("☀️ Brightness / Contrast").clicked() {
+                        let layer = Layer::new_adjustment("Brightness/Contrast", iroai_core::AdjustmentKind::BrightnessContrast { brightness: 0.0, contrast: 0.0 }, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("🎨 Hue / Saturation").clicked() {
+                        let layer = Layer::new_adjustment("Hue/Saturation", iroai_core::AdjustmentKind::HueSaturation { hue_shift: 0.0, saturation: 1.0 }, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("⚡ Exposure").clicked() {
+                        let layer = Layer::new_adjustment("Exposure", iroai_core::AdjustmentKind::Exposure { ev: 0.0 }, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("📊 Levels").clicked() {
+                        let layer = Layer::new_adjustment("Levels", iroai_core::AdjustmentKind::Levels { black_point: 0, gamma: 1.0, white_point: 255 }, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("📷 Photo Master").clicked() {
+                        let layer = Layer::new_adjustment("Photo Master", iroai_core::AdjustmentKind::Photo(iroai_core::PhotoAdjustments::default()), w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("⬛ Invert").clicked() {
+                        let layer = Layer::new_adjustment("Invert", iroai_core::AdjustmentKind::Invert, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("⚪ Grayscale").clicked() {
+                        let layer = Layer::new_adjustment("Grayscale", iroai_core::AdjustmentKind::Grayscale, w, h);
+                        let id = layer.id;
+                        doc.layers.push(layer);
+                        doc.active_layer_id = Some(id);
+                        ui.close_menu();
+                    }
+                });
                 if ui.button("🗑 Del").clicked() {
                     if let Some(id) = doc.active_layer_id {
                         if let Some(pos) = doc.layers.iter().position(|l| l.id == id) {
@@ -368,8 +455,135 @@ impl Panels {
                         if let Some(ref mut st) = style.stroke {
                             ui.add(egui::Slider::new(&mut st.size, 1..=20).text("Stroke Size"));
                         }
+
+                        let mut glow_enabled = style.outer_glow.is_some();
+                        if ui.checkbox(&mut glow_enabled, "Outer Glow (光彩・外側)").changed() {
+                            if glow_enabled {
+                                style.outer_glow = Some(iroai_core::style::OuterGlow::default());
+                            } else {
+                                style.outer_glow = None;
+                            }
+                        }
+                        if let Some(ref mut og) = style.outer_glow {
+                            og.enabled = true;
+                            ui.add(egui::Slider::new(&mut og.radius, 1..=30).text("Glow Radius"));
+                            ui.add(egui::Slider::new(&mut og.opacity, 0.0..=1.0).text("Opacity"));
+                        }
+
+                        let mut bevel_enabled = style.bevel_emboss.is_some();
+                        if ui.checkbox(&mut bevel_enabled, "Bevel & Emboss (ベベルとエンボス)").changed() {
+                            if bevel_enabled {
+                                style.bevel_emboss = Some(iroai_core::style::BevelAndEmboss::default());
+                            } else {
+                                style.bevel_emboss = None;
+                            }
+                        }
+                        if let Some(ref mut be) = style.bevel_emboss {
+                            be.enabled = true;
+                            ui.add(egui::Slider::new(&mut be.depth, 0.5..=8.0).text("Depth"));
+                            ui.add(egui::Slider::new(&mut be.size, 1..=15).text("Size"));
+                            ui.add(egui::Slider::new(&mut be.angle_deg, 0.0..=360.0).text("Light Angle"));
+                        }
                     }
                 });
+
+                // Non-destructive Text Layer live properties editor
+                let mut text_update = None;
+                if let iroai_core::LayerKind::Text { ref text, font_size, color, .. } = layer.kind {
+                    let mut cur_text = text.clone();
+                    let mut cur_size = font_size;
+                    let mut cur_color = color;
+                    let mut changed = false;
+
+                    ui.collapsing("🅃 Live Text Properties", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Text:");
+                            if ui.text_edit_singleline(&mut cur_text).changed() {
+                                changed = true;
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Size:");
+                            if ui.add(egui::Slider::new(&mut cur_size, 6.0..=120.0).suffix(" pt")).changed() {
+                                changed = true;
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+                            let mut egui_col = [cur_color.r as f32 / 255.0, cur_color.g as f32 / 255.0, cur_color.b as f32 / 255.0];
+                            if ui.color_edit_button_rgb(&mut egui_col).changed() {
+                                cur_color = Color::rgba(
+                                    (egui_col[0] * 255.0).round() as u8,
+                                    (egui_col[1] * 255.0).round() as u8,
+                                    (egui_col[2] * 255.0).round() as u8,
+                                    cur_color.a,
+                                );
+                                changed = true;
+                            }
+                        });
+                    });
+
+                    if changed {
+                        text_update = Some((cur_text, cur_size, cur_color));
+                    }
+                }
+
+                if let Some((new_txt, new_sz, new_col)) = text_update {
+                    layer.update_text(&new_txt, new_sz, new_col);
+                }
+
+                // Non-destructive Adjustment Layer live properties editor
+                if let iroai_core::LayerKind::Adjustment(ref mut adj) = layer.kind {
+                    ui.collapsing("⚖ Live Adjustment Controls", |ui| {
+                        match adj {
+                            iroai_core::AdjustmentKind::BrightnessContrast { brightness, contrast } => {
+                                ui.add(egui::Slider::new(brightness, -1.0..=1.0).text("Brightness"));
+                                ui.add(egui::Slider::new(contrast, -1.0..=1.0).text("Contrast"));
+                            }
+                            iroai_core::AdjustmentKind::HueSaturation { hue_shift, saturation } => {
+                                ui.add(egui::Slider::new(hue_shift, -180.0..=180.0).text("Hue Shift"));
+                                ui.add(egui::Slider::new(saturation, 0.0..=3.0).text("Saturation"));
+                            }
+                            iroai_core::AdjustmentKind::Exposure { ev } => {
+                                ui.add(egui::Slider::new(ev, -5.0..=5.0).text("Exposure (EV)"));
+                            }
+                            iroai_core::AdjustmentKind::Levels { black_point, gamma, white_point } => {
+                                ui.add(egui::Slider::new(black_point, 0..=254).text("Black Point"));
+                                ui.add(egui::Slider::new(gamma, 0.1..=5.0).text("Midtone Gamma"));
+                                ui.add(egui::Slider::new(white_point, 1..=255).text("White Point"));
+                            }
+                            iroai_core::AdjustmentKind::Photo(photo_adj) => {
+                                ui.add(egui::Slider::new(&mut photo_adj.exposure, -5.0..=5.0).text("Exposure"));
+                                ui.add(egui::Slider::new(&mut photo_adj.highlights, -100.0..=100.0).text("Highlights"));
+                                ui.add(egui::Slider::new(&mut photo_adj.shadows, -100.0..=100.0).text("Shadows"));
+                                ui.add(egui::Slider::new(&mut photo_adj.whites, -100.0..=100.0).text("Whites"));
+                                ui.add(egui::Slider::new(&mut photo_adj.blacks, -100.0..=100.0).text("Blacks"));
+                                ui.add(egui::Slider::new(&mut photo_adj.temperature, -100.0..=100.0).text("Temp"));
+                                ui.add(egui::Slider::new(&mut photo_adj.tint, -100.0..=100.0).text("Tint"));
+                                ui.add(egui::Slider::new(&mut photo_adj.vibrance, -100.0..=100.0).text("Vibrance"));
+                                ui.add(egui::Slider::new(&mut photo_adj.saturation, -100.0..=100.0).text("Saturation"));
+                                ui.add(egui::Slider::new(&mut photo_adj.clarity, -100.0..=100.0).text("Clarity"));
+                            }
+                            iroai_core::AdjustmentKind::Threshold { cutoff } => {
+                                ui.add(egui::Slider::new(cutoff, 0..=255).text("Cutoff"));
+                            }
+                            iroai_core::AdjustmentKind::Posterize { levels } => {
+                                ui.add(egui::Slider::new(levels, 2..=32).text("Levels"));
+                            }
+                            iroai_core::AdjustmentKind::Invert => {
+                                ui.label("Inverts all color channels below this layer.");
+                            }
+                            iroai_core::AdjustmentKind::Grayscale => {
+                                ui.label("Converts composite below to perceptual luminance.");
+                            }
+                            iroai_core::AdjustmentKind::Curves { .. } => {
+                                ui.label("Tone curve mapping active.");
+                            }
+                        }
+                    });
+                }
 
                 ui.separator();
             }
@@ -398,7 +612,14 @@ impl Panels {
 
                         let clip_prefix = if layer.clipping_mask { "  ↳ " } else { "" };
                         let lock_icon = if layer.lock_alpha { "🔒 " } else { "" };
-                        let name_label = format!("{}{}{}", clip_prefix, lock_icon, layer.name);
+                        let type_icon = match layer.kind {
+                            iroai_core::LayerKind::Text { .. } => "🅃 ",
+                            iroai_core::LayerKind::Adjustment(_) => "⚖ ",
+                            iroai_core::LayerKind::Group { .. } => "📁 ",
+                            iroai_core::LayerKind::SmartObject(_) => "📦 ",
+                            iroai_core::LayerKind::Raster => "",
+                        };
+                        let name_label = format!("{}{}{}{}", clip_prefix, lock_icon, type_icon, layer.name);
 
                         if ui.selectable_label(is_active, name_label).clicked() {
                             layer_to_select = Some(layer.id);
@@ -406,15 +627,11 @@ impl Panels {
 
                         // クイック移動ボタン (D&D代替・即応性)
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if actual_idx < num_layers - 1 {
-                                if ui.small_button("▲").on_hover_text("Move Layer Up").clicked() {
-                                    move_op = Some((actual_idx, actual_idx + 1));
-                                }
+                            if actual_idx < num_layers - 1 && ui.small_button("▲").on_hover_text("Move Layer Up").clicked() {
+                                move_op = Some((actual_idx, actual_idx + 1));
                             }
-                            if actual_idx > 0 {
-                                if ui.small_button("▼").on_hover_text("Move Layer Down").clicked() {
-                                    move_op = Some((actual_idx, actual_idx - 1));
-                                }
+                            if actual_idx > 0 && ui.small_button("▼").on_hover_text("Move Layer Down").clicked() {
+                                move_op = Some((actual_idx, actual_idx - 1));
                             }
                         });
                     });
@@ -426,6 +643,59 @@ impl Panels {
                     doc.move_layer(from, to);
                 }
             });
+        });
+    }
+
+    /// ベクターパスパネル (Photoshopのパスパネル同等: 選択範囲化・境界線描画・塗りつぶし・閉じる)
+    pub fn render_paths_panel(
+        ui: &mut Ui,
+        doc: &mut Document,
+        canvas_state: &mut crate::canvas::CanvasState,
+        brush: &Brush,
+    ) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Vector Paths");
+                if ui.button("+ New Path").clicked() {
+                    let mut vp = iroai_core::VectorPath::new(format!("Path {}", doc.paths.len() + 1));
+                    vp.subpaths.push(iroai_core::SubPath { points: Vec::new(), closed: false });
+                    canvas_state.active_path = Some(vp);
+                }
+                if ui.button("🗑 Clear").clicked() {
+                    canvas_state.active_path = None;
+                    canvas_state.selected_anchor_idx = None;
+                }
+            });
+            ui.separator();
+
+            if let Some(ref mut path) = canvas_state.active_path {
+                ui.label(format!("Active: {}", path.name));
+                if let Some(sub) = path.subpaths.first_mut() {
+                    ui.label(format!("Anchor Points: {}", sub.points.len()));
+                    ui.checkbox(&mut sub.closed, "Close Path");
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("🔳 Load as Selection").clicked() {
+                            let mask = path.to_selection_mask(doc.width, doc.height);
+                            doc.selection = mask;
+                        }
+                        if ui.button("🖋 Stroke Path").clicked() {
+                            if let Some(layer) = doc.active_layer_mut() {
+                                path.rasterize_stroke(&mut layer.buffer, brush.color, brush.size);
+                            }
+                        }
+                        if ui.button("🪣 Fill Path").clicked() {
+                            if let Some(layer) = doc.active_layer_mut() {
+                                path.rasterize_fill(&mut layer.buffer, brush.color);
+                            }
+                        }
+                    });
+                }
+            } else {
+                ui.label("No active vector path.");
+                ui.label("Select the Pen Tool (P) and click on the canvas to place anchor points.");
+            }
         });
     }
 }

@@ -12,6 +12,10 @@ pub enum FilterType {
     Posterize { levels: u8 },
     GaussianBlur { radius: u32 },
     Sharpen { strength: f32 },
+    MotionBlur { angle_deg: f32, distance: u32 },
+    RadialBlur { center_x: f32, center_y: f32, strength: f32 },
+    UnsharpMask { radius: u32, amount: f32, threshold: u8 },
+    SobelEdge,
 }
 
 pub struct Filters;
@@ -283,5 +287,459 @@ impl Filters {
                 }
             }
         }
+    }
+
+    pub fn apply_motion_blur(buffer: &mut PixelBuffer, angle_deg: f32, distance: u32) {
+        if distance == 0 || buffer.width == 0 || buffer.height == 0 {
+            return;
+        }
+        let rad = angle_deg.to_radians();
+        let dx = rad.cos();
+        let dy = rad.sin();
+        let w = buffer.width as i32;
+        let h = buffer.height as i32;
+        let dist = distance as i32;
+        let samples = (dist * 2 + 1) as usize;
+
+        let src = buffer.clone();
+
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum_r = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_b = 0.0f32;
+                let mut sum_a = 0.0f32;
+
+                for step in -dist..=dist {
+                    let sx = ((x as f32 + step as f32 * dx).round() as i32).clamp(0, w - 1) as u32;
+                    let sy = ((y as f32 + step as f32 * dy).round() as i32).clamp(0, h - 1) as u32;
+                    if let Some(col) = src.get_pixel(sx, sy) {
+                        sum_r += col.r as f32;
+                        sum_g += col.g as f32;
+                        sum_b += col.b as f32;
+                        sum_a += col.a as f32;
+                    }
+                }
+
+                let inv = 1.0 / samples as f32;
+                let out_col = crate::color::Color::rgba(
+                    (sum_r * inv).clamp(0.0, 255.0).round() as u8,
+                    (sum_g * inv).clamp(0.0, 255.0).round() as u8,
+                    (sum_b * inv).clamp(0.0, 255.0).round() as u8,
+                    (sum_a * inv).clamp(0.0, 255.0).round() as u8,
+                );
+                buffer.set_pixel(x as u32, y as u32, out_col);
+            }
+        }
+    }
+
+    pub fn apply_radial_blur(buffer: &mut PixelBuffer, center_x: f32, center_y: f32, strength: f32) {
+        if strength <= 0.0 || buffer.width == 0 || buffer.height == 0 {
+            return;
+        }
+        let w = buffer.width as i32;
+        let h = buffer.height as i32;
+        let steps = 16;
+        let src = buffer.clone();
+
+        for y in 0..h {
+            for x in 0..w {
+                let vx = x as f32 - center_x;
+                let vy = y as f32 - center_y;
+                let mut sum_r = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_b = 0.0f32;
+                let mut sum_a = 0.0f32;
+
+                for i in 0..steps {
+                    let scale = 1.0 - (strength * 0.02) * (i as f32 / steps as f32);
+                    let sx = ((center_x + vx * scale).round() as i32).clamp(0, w - 1) as u32;
+                    let sy = ((center_y + vy * scale).round() as i32).clamp(0, h - 1) as u32;
+                    if let Some(col) = src.get_pixel(sx, sy) {
+                        sum_r += col.r as f32;
+                        sum_g += col.g as f32;
+                        sum_b += col.b as f32;
+                        sum_a += col.a as f32;
+                    }
+                }
+
+                let inv = 1.0 / steps as f32;
+                buffer.set_pixel(
+                    x as u32,
+                    y as u32,
+                    crate::color::Color::rgba(
+                        (sum_r * inv).clamp(0.0, 255.0).round() as u8,
+                        (sum_g * inv).clamp(0.0, 255.0).round() as u8,
+                        (sum_b * inv).clamp(0.0, 255.0).round() as u8,
+                        (sum_a * inv).clamp(0.0, 255.0).round() as u8,
+                    ),
+                );
+            }
+        }
+    }
+
+    pub fn apply_unsharp_mask(buffer: &mut PixelBuffer, radius: u32, amount: f32, threshold: u8) {
+        let mut blurred = buffer.clone();
+        Self::apply_gaussian_blur(&mut blurred, radius);
+        let th = threshold as i32;
+
+        for (orig_chunk, blur_chunk) in buffer.data.chunks_exact_mut(4).zip(blurred.data.chunks_exact(4)) {
+            for i in 0..3 {
+                let orig = orig_chunk[i] as i32;
+                let blur = blur_chunk[i] as i32;
+                let diff = orig - blur;
+                if diff.abs() >= th {
+                    let sharpened = orig as f32 + diff as f32 * amount;
+                    orig_chunk[i] = sharpened.clamp(0.0, 255.0).round() as u8;
+                }
+            }
+        }
+    }
+
+    pub fn apply_sobel_edge(buffer: &mut PixelBuffer) {
+        let w = buffer.width as i32;
+        let h = buffer.height as i32;
+        if w < 3 || h < 3 {
+            return;
+        }
+        let src = buffer.clone();
+
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let mut gx = 0.0f32;
+                let mut gy = 0.0f32;
+
+                // Sobel Kernels:
+                // Gx: [-1 0 1, -2 0 2, -1 0 1]
+                // Gy: [-1 -2 -1,  0  0  0,  1  2  1]
+                let kernel_x = [
+                    (-1, -1, -1.0), (1, -1, 1.0),
+                    (-1,  0, -2.0), (1,  0, 2.0),
+                    (-1,  1, -1.0), (1,  1, 1.0),
+                ];
+                let kernel_y = [
+                    (-1, -1, -1.0), (0, -1, -2.0), (1, -1, -1.0),
+                    (-1,  1,  1.0), (0,  1,  2.0), (1,  1,  1.0),
+                ];
+
+                for (dx, dy, k) in kernel_x {
+                    if let Some(col) = src.get_pixel((x + dx) as u32, (y + dy) as u32) {
+                        let lum = (col.r as f32 * 0.299) + (col.g as f32 * 0.587) + (col.b as f32 * 0.114);
+                        gx += lum * k;
+                    }
+                }
+                for (dx, dy, k) in kernel_y {
+                    if let Some(col) = src.get_pixel((x + dx) as u32, (y + dy) as u32) {
+                        let lum = (col.r as f32 * 0.299) + (col.g as f32 * 0.587) + (col.b as f32 * 0.114);
+                        gy += lum * k;
+                    }
+                }
+
+                let mag = (gx * gx + gy * gy).sqrt().clamp(0.0, 255.0).round() as u8;
+                buffer.set_pixel(x as u32, y as u32, crate::color::Color::rgba(mag, mag, mag, 255));
+            }
+        }
+    }
+
+    /// Photoshop-grade Spot Healing (Texture Repair) using annular boundary sampling and bilateral harmonic blending.
+    pub fn apply_spot_heal(buffer: &mut PixelBuffer, center_x: f32, center_y: f32, radius: f32) {
+        if radius <= 1.0 || buffer.width == 0 || buffer.height == 0 {
+            return;
+        }
+
+        let r = radius;
+        let r_outer = r * 1.4;
+        let r2_inner = r * r;
+        let r2_outer = r_outer * r_outer;
+
+        let min_x = (center_x - r_outer).floor().max(0.0) as u32;
+        let max_x = (center_x + r_outer).ceil().min(buffer.width as f32 - 1.0).max(0.0) as u32;
+        let min_y = (center_y - r_outer).floor().max(0.0) as u32;
+        let max_y = (center_y + r_outer).ceil().min(buffer.height as f32 - 1.0).max(0.0) as u32;
+
+        if min_x >= max_x || min_y >= max_y {
+            return;
+        }
+
+        // 1. Sample boundary ring pixels outside inner radius to compute surrounding texture & color
+        let mut sum_r = 0.0f32;
+        let mut sum_g = 0.0f32;
+        let mut sum_b = 0.0f32;
+        let mut ring_samples = Vec::new();
+
+        for y in min_y..=max_y {
+            let dy = y as f32 - center_y;
+            for x in min_x..=max_x {
+                let dx = x as f32 - center_x;
+                let d2 = dx * dx + dy * dy;
+                if d2 >= r2_inner && d2 <= r2_outer {
+                    if let Some(col) = buffer.get_pixel(x, y) {
+                        sum_r += col.r as f32;
+                        sum_g += col.g as f32;
+                        sum_b += col.b as f32;
+                        ring_samples.push((dx, dy, col));
+                    }
+                }
+            }
+        }
+
+        if ring_samples.is_empty() {
+            return;
+        }
+
+        let avg_r = sum_r / ring_samples.len() as f32;
+        let avg_g = sum_g / ring_samples.len() as f32;
+        let avg_b = sum_b / ring_samples.len() as f32;
+
+        // 2. Synthesize inner flawed region via Inverse-Distance Weighting (IDW) + edge feathering
+        let src = buffer.clone();
+        for y in min_y..=max_y {
+            let dy = y as f32 - center_y;
+            for x in min_x..=max_x {
+                let dx = x as f32 - center_x;
+                let d2 = dx * dx + dy * dy;
+
+                if d2 < r2_inner {
+                    let d = d2.sqrt();
+                    let norm_d = d / r; // 0.0 at center, 1.0 at boundary
+
+                    // Calculate distance-weighted boundary color
+                    let mut weight_sum = 0.0f32;
+                    let mut blend_r = 0.0f32;
+                    let mut blend_g = 0.0f32;
+                    let mut blend_b = 0.0f32;
+
+                    for &(sx, sy, col) in &ring_samples {
+                        let dist_sq = (dx - sx) * (dx - sx) + (dy - sy) * (dy - sy) + 1.0;
+                        let w = 1.0 / dist_sq;
+                        blend_r += col.r as f32 * w;
+                        blend_g += col.g as f32 * w;
+                        blend_b += col.b as f32 * w;
+                        weight_sum += w;
+                    }
+
+                    let idw_r = if weight_sum > 0.0 { blend_r / weight_sum } else { avg_r };
+                    let idw_g = if weight_sum > 0.0 { blend_g / weight_sum } else { avg_g };
+                    let idw_b = if weight_sum > 0.0 { blend_b / weight_sum } else { avg_b };
+
+                    // Bell-shaped smooth blending towards boundaries
+                    let t = (1.0 - norm_d).powi(2);
+                    let orig = src.get_pixel(x, y).unwrap_or(crate::color::Color::BLACK);
+
+                    let out_r = (orig.r as f32 * (1.0 - t) + idw_r * t).clamp(0.0, 255.0).round() as u8;
+                    let out_g = (orig.g as f32 * (1.0 - t) + idw_g * t).clamp(0.0, 255.0).round() as u8;
+                    let out_b = (orig.b as f32 * (1.0 - t) + idw_b * t).clamp(0.0, 255.0).round() as u8;
+
+                    buffer.set_pixel(x, y, crate::color::Color::rgba(out_r, out_g, out_b, orig.a));
+                }
+            }
+        }
+    }
+
+    /// Content-Aware Scaling (Seam Carving)
+    /// Dynamically carves out low-energy vertical/horizontal seams to preserve important focal objects.
+    pub fn seam_carve_resize(buffer: &PixelBuffer, target_width: u32, target_height: u32) -> PixelBuffer {
+        let mut cur = buffer.clone();
+        if target_width == 0 || target_height == 0 {
+            return PixelBuffer::new(target_width, target_height);
+        }
+
+        // Reduce width if needed
+        while cur.width > target_width {
+            let w = cur.width as usize;
+            let h = cur.height as usize;
+
+            // 1. Calculate dual-gradient energy map e(x, y) = dx^2 + dy^2
+            let mut energy = vec![0.0f32; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let left_x = if x == 0 { w - 1 } else { x - 1 };
+                    let right_x = if x == w - 1 { 0 } else { x + 1 };
+                    let up_y = if y == 0 { h - 1 } else { y - 1 };
+                    let down_y = if y == h - 1 { 0 } else { y + 1 };
+
+                    let p_left = (y * w + left_x) * 4;
+                    let p_right = (y * w + right_x) * 4;
+                    let p_up = (up_y * w + x) * 4;
+                    let p_down = (down_y * w + x) * 4;
+
+                    let mut dx2 = 0.0f32;
+                    let mut dy2 = 0.0f32;
+                    for c in 0..3 {
+                        let rx = cur.data[p_right + c] as f32 - cur.data[p_left + c] as f32;
+                        let ry = cur.data[p_down + c] as f32 - cur.data[p_up + c] as f32;
+                        dx2 += rx * rx;
+                        dy2 += ry * ry;
+                    }
+                    energy[y * w + x] = dx2 + dy2;
+                }
+            }
+
+            // 2. Dynamic programming: compute cumulative minimum energy matrix M
+            let mut dp = vec![0.0f32; w * h];
+            for x in 0..w {
+                dp[x] = energy[x];
+            }
+            for y in 1..h {
+                for x in 0..w {
+                    let mut min_prev = dp[(y - 1) * w + x];
+                    if x > 0 {
+                        min_prev = min_prev.min(dp[(y - 1) * w + (x - 1)]);
+                    }
+                    if x + 1 < w {
+                        min_prev = min_prev.min(dp[(y - 1) * w + (x + 1)]);
+                    }
+                    dp[y * w + x] = energy[y * w + x] + min_prev;
+                }
+            }
+
+            // 3. Find minimum energy seam starting at the bottom row
+            let mut min_x = 0;
+            let mut min_val = f32::INFINITY;
+            for x in 0..w {
+                let val = dp[(h - 1) * w + x];
+                if val < min_val {
+                    min_val = val;
+                    min_x = x;
+                }
+            }
+
+            // Backtrack seam path
+            let mut seam = vec![0usize; h];
+            seam[h - 1] = min_x;
+            for y in (0..h - 1).rev() {
+                let prev_x = seam[y + 1];
+                let mut best_x = prev_x;
+                let mut best_val = dp[y * w + prev_x];
+                if prev_x > 0 && dp[y * w + (prev_x - 1)] < best_val {
+                    best_val = dp[y * w + (prev_x - 1)];
+                    best_x = prev_x - 1;
+                }
+                if prev_x + 1 < w && dp[y * w + (prev_x + 1)] < best_val {
+                    best_x = prev_x + 1;
+                }
+                seam[y] = best_x;
+            }
+
+            // 4. Carve seam out: copy remaining pixels into a buffer of width w - 1
+            let new_w = (w - 1) as u32;
+            let mut next_buf = PixelBuffer::new(new_w, h as u32);
+            for y in 0..h {
+                let sx = seam[y];
+                let mut dst_x = 0;
+                for x in 0..w {
+                    if x == sx {
+                        continue;
+                    }
+                    let src_idx = (y * w + x) * 4;
+                    let dst_idx = (y * (new_w as usize) + dst_x) * 4;
+                    next_buf.data[dst_idx..dst_idx + 4].copy_from_slice(&cur.data[src_idx..src_idx + 4]);
+                    dst_x += 1;
+                }
+            }
+            cur = next_buf;
+        }
+
+        // Reduce height if needed (by carving horizontal seams)
+        while cur.height > target_height {
+            let w = cur.width as usize;
+            let h = cur.height as usize;
+
+            // 1. Dual-gradient energy
+            let mut energy = vec![0.0f32; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let left_x = if x == 0 { w - 1 } else { x - 1 };
+                    let right_x = if x == w - 1 { 0 } else { x + 1 };
+                    let up_y = if y == 0 { h - 1 } else { y - 1 };
+                    let down_y = if y == h - 1 { 0 } else { y + 1 };
+
+                    let p_left = (y * w + left_x) * 4;
+                    let p_right = (y * w + right_x) * 4;
+                    let p_up = (up_y * w + x) * 4;
+                    let p_down = (down_y * w + x) * 4;
+
+                    let mut dx2 = 0.0f32;
+                    let mut dy2 = 0.0f32;
+                    for c in 0..3 {
+                        let rx = cur.data[p_right + c] as f32 - cur.data[p_left + c] as f32;
+                        let ry = cur.data[p_down + c] as f32 - cur.data[p_up + c] as f32;
+                        dx2 += rx * rx;
+                        dy2 += ry * ry;
+                    }
+                    energy[y * w + x] = dx2 + dy2;
+                }
+            }
+
+            // 2. DP left-to-right
+            let mut dp = vec![0.0f32; w * h];
+            for y in 0..h {
+                dp[y * w] = energy[y * w];
+            }
+            for x in 1..w {
+                for y in 0..h {
+                    let mut min_prev = dp[y * w + (x - 1)];
+                    if y > 0 {
+                        min_prev = min_prev.min(dp[(y - 1) * w + (x - 1)]);
+                    }
+                    if y + 1 < h {
+                        min_prev = min_prev.min(dp[(y + 1) * w + (x - 1)]);
+                    }
+                    dp[y * w + x] = energy[y * w + x] + min_prev;
+                }
+            }
+
+            // 3. Find horizontal seam starting at rightmost column
+            let mut min_y = 0;
+            let mut min_val = f32::INFINITY;
+            for y in 0..h {
+                let val = dp[y * w + (w - 1)];
+                if val < min_val {
+                    min_val = val;
+                    min_y = y;
+                }
+            }
+
+            let mut seam = vec![0usize; w];
+            seam[w - 1] = min_y;
+            for x in (0..w - 1).rev() {
+                let prev_y = seam[x + 1];
+                let mut best_y = prev_y;
+                let mut best_val = dp[prev_y * w + x];
+                if prev_y > 0 && dp[(prev_y - 1) * w + x] < best_val {
+                    best_val = dp[(prev_y - 1) * w + x];
+                    best_y = prev_y - 1;
+                }
+                if prev_y + 1 < h && dp[(prev_y + 1) * w + x] < best_val {
+                    best_y = prev_y + 1;
+                }
+                seam[x] = best_y;
+            }
+
+            // 4. Carve horizontal seam
+            let new_h = (h - 1) as u32;
+            let mut next_buf = PixelBuffer::new(w as u32, new_h);
+            for x in 0..w {
+                let sy = seam[x];
+                let mut dst_y = 0;
+                for y in 0..h {
+                    if y == sy {
+                        continue;
+                    }
+                    let src_idx = (y * w + x) * 4;
+                    let dst_idx = (dst_y * w + x) * 4;
+                    next_buf.data[dst_idx..dst_idx + 4].copy_from_slice(&cur.data[src_idx..src_idx + 4]);
+                    dst_y += 1;
+                }
+            }
+            cur = next_buf;
+        }
+
+        // If target size is larger than current, bicubic scale up
+        if cur.width != target_width || cur.height != target_height {
+            cur = crate::transform::Transform::resize_bicubic(&cur, target_width, target_height);
+        }
+
+        cur
     }
 }

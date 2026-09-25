@@ -98,10 +98,12 @@ impl ImageIo {
             name: &'a str,
             visible: bool,
             locked: bool,
+            lock_alpha: bool,
             opacity: f32,
             blend_mode: crate::color::BlendMode,
             kind: crate::layer::LayerKind,
             clipping_mask: bool,
+            parent_id: Option<String>,
             mask_enabled: bool,
             style: Option<crate::style::LayerStyle>,
         }
@@ -118,10 +120,12 @@ impl ImageIo {
                 name: &l.name,
                 visible: l.visible,
                 locked: l.locked,
+                lock_alpha: l.lock_alpha,
                 opacity: l.opacity,
                 blend_mode: l.blend_mode,
                 kind: l.kind.clone(),
                 clipping_mask: l.clipping_mask,
+                parent_id: l.parent_id.map(|id| id.0.to_string()),
                 mask_enabled: l.mask_enabled,
                 style: l.style.clone(),
             }).collect(),
@@ -171,12 +175,16 @@ impl ImageIo {
             name: String,
             visible: bool,
             locked: bool,
+            #[serde(default)]
+            lock_alpha: bool,
             opacity: f32,
             blend_mode: crate::color::BlendMode,
             #[serde(default = "default_layer_kind")]
             kind: crate::layer::LayerKind,
             #[serde(default)]
             clipping_mask: bool,
+            #[serde(default)]
+            parent_id: Option<String>,
             #[serde(default)]
             mask_enabled: bool,
             #[serde(default)]
@@ -208,6 +216,7 @@ impl ImageIo {
             let layer_id = uuid::Uuid::parse_str(&meta.id)
                 .map(crate::layer::LayerId)
                 .unwrap_or_else(|_| crate::layer::LayerId::new());
+            let parent_id = meta.parent_id.and_then(|pid| uuid::Uuid::parse_str(&pid).ok().map(crate::layer::LayerId));
 
             let mask = {
                 let mask_entry = format!("masks/{}.bin", meta.id);
@@ -232,12 +241,13 @@ impl ImageIo {
                 name: meta.name,
                 visible: meta.visible,
                 locked: meta.locked,
-                lock_alpha: false,
+                lock_alpha: meta.lock_alpha,
                 opacity: meta.opacity,
                 blend_mode: meta.blend_mode,
                 buffer,
                 kind: meta.kind,
                 clipping_mask: meta.clipping_mask,
+                parent_id,
                 mask,
                 mask_enabled: meta.mask_enabled,
                 style: meta.style,
@@ -252,6 +262,7 @@ impl ImageIo {
             width: manifest.width,
             height: manifest.height,
             dpi: manifest.dpi,
+            color_mode: crate::document::DocumentColorMode::Rgb,
             layers,
             active_layer_id,
             selection: crate::selection::SelectionMask::new(manifest.width, manifest.height),

@@ -57,6 +57,33 @@ impl SelectionMask {
         self.get_value(x, y) > 0
     }
 
+    pub fn get_bounding_box(&self) -> Option<(u32, u32, u32, u32)> {
+        let mut min_x = u32::MAX;
+        let mut min_y = u32::MAX;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        let mut has_selected = false;
+
+        let w = self.width as usize;
+        for (i, &v) in self.data.iter().enumerate() {
+            if v > 0 {
+                has_selected = true;
+                let x = (i % w) as u32;
+                let y = (i / w) as u32;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+
+        if has_selected {
+            Some((min_x, min_y, max_x.saturating_sub(min_x) + 1, max_y.saturating_sub(min_y) + 1))
+        } else {
+            None
+        }
+    }
+
     #[inline]
     pub fn set_value(&mut self, x: u32, y: u32, val: u8) {
         if x < self.width && y < self.height {
@@ -227,4 +254,167 @@ impl SelectionMask {
             }
         }
     }
+
+    /// Photoshop-style Magic Wand selection tool.
+    /// - `seed_x`, `seed_y`: click coordinate
+    /// - `tolerance`: color difference threshold (0..=255)
+    /// - `contiguous`: true = flood fill connected region; false = global matching pixels across entire buffer
+    /// - `op`: selection operation (New, Add, Subtract, Intersect)
+    pub fn select_magic_wand(
+        &mut self,
+        buffer: &crate::buffer::PixelBuffer,
+        seed_x: u32,
+        seed_y: u32,
+        tolerance: f32,
+        contiguous: bool,
+        op: SelectionOp,
+    ) {
+        if seed_x >= buffer.width || seed_y >= buffer.height {
+            return;
+        }
+
+        let target_col = match buffer.get_pixel(seed_x, seed_y) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let tol_sq = (tolerance * tolerance * 3.0) as f32;
+        let color_dist_sq = |c1: crate::color::Color, c2: crate::color::Color| -> f32 {
+            let dr = c1.r as f32 - c2.r as f32;
+            let dg = c1.g as f32 - c2.g as f32;
+            let db = c1.b as f32 - c2.b as f32;
+            let da = c1.a as f32 - c2.a as f32;
+            dr * dr + dg * dg + db * db + da * da * 0.5
+        };
+
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut new_mask = vec![0u8; w * h];
+
+        if !contiguous {
+            // Global selection of all matching pixels within tolerance
+            for y in 0..buffer.height {
+                for x in 0..buffer.width {
+                    if let Some(c) = buffer.get_pixel(x, y) {
+                        if color_dist_sq(target_col, c) <= tol_sq {
+                            let idx = (y as usize) * w + (x as usize);
+                            new_mask[idx] = 255;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Contiguous 4-directional flood fill
+            let mut visited = vec![false; w * h];
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((seed_x, seed_y));
+            visited[(seed_y as usize) * w + (seed_x as usize)] = true;
+
+            while let Some((cx, cy)) = queue.pop_front() {
+                let idx = (cy as usize) * w + (cx as usize);
+                new_mask[idx] = 255;
+
+                for (dx, dy) in &[(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let nx = cx as i32 + dx;
+                    let ny = cy as i32 + dy;
+                    if nx >= 0 && nx < buffer.width as i32 && ny >= 0 && ny < buffer.height as i32 {
+                        let ux = nx as u32;
+                        let uy = ny as u32;
+                        let n_idx = (uy as usize) * w + (ux as usize);
+                        if !visited[n_idx] {
+                            visited[n_idx] = true;
+                            if let Some(c) = buffer.get_pixel(ux, uy) {
+                                if color_dist_sq(target_col, c) <= tol_sq {
+                                    queue.push_back((ux, uy));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply SelectionOp
+        match op {
+            SelectionOp::New => {
+                self.data = new_mask;
+            }
+            SelectionOp::Add => {
+                for i in 0..self.data.len() {
+                    self.data[i] = self.data[i].max(new_mask[i]);
+                }
+            }
+            SelectionOp::Subtract => {
+                for i in 0..self.data.len() {
+                    if new_mask[i] > 0 {
+                        self.data[i] = 0;
+                    }
+                }
+            }
+            SelectionOp::Intersect => {
+                for i in 0..self.data.len() {
+                    if new_mask[i] == 0 {
+                        self.data[i] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Photoshop-style Color Range selection tool.
+    /// Selects pixels based on similarity to target color with fuzzy (smooth falloff) selection mask.
+    pub fn select_color_range(
+        &mut self,
+        buffer: &crate::buffer::PixelBuffer,
+        target_color: crate::color::Color,
+        fuzziness: f32, // 0.0 ..= 200.0
+        op: SelectionOp,
+    ) {
+        let fuzz = fuzziness.max(1.0);
+        let max_dist = fuzz * (3.0f32).sqrt();
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut new_mask = vec![0u8; w * h];
+
+        for y in 0..buffer.height {
+            for x in 0..buffer.width {
+                if let Some(c) = buffer.get_pixel(x, y) {
+                    let dr = c.r as f32 - target_color.r as f32;
+                    let dg = c.g as f32 - target_color.g as f32;
+                    let db = c.b as f32 - target_color.b as f32;
+                    let dist = (dr * dr + dg * dg + db * db).sqrt();
+
+                    if dist <= max_dist {
+                        let intensity = ((1.0 - dist / max_dist) * 255.0).clamp(0.0, 255.0).round() as u8;
+                        let idx = (y as usize) * w + (x as usize);
+                        new_mask[idx] = intensity;
+                    }
+                }
+            }
+        }
+
+        match op {
+            SelectionOp::New => {
+                self.data = new_mask;
+            }
+            SelectionOp::Add => {
+                for i in 0..self.data.len() {
+                    self.data[i] = self.data[i].max(new_mask[i]);
+                }
+            }
+            SelectionOp::Subtract => {
+                for i in 0..self.data.len() {
+                    self.data[i] = self.data[i].saturating_sub(new_mask[i]);
+                }
+            }
+            SelectionOp::Intersect => {
+                for i in 0..self.data.len() {
+                    let current = self.data[i] as f32 / 255.0;
+                    let new_val = new_mask[i] as f32 / 255.0;
+                    self.data[i] = (current * new_val * 255.0).round() as u8;
+                }
+            }
+        }
+    }
 }
+

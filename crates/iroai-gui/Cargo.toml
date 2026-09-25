@@ -8,7 +8,12 @@ license.workspace = true
 [dependencies]
 iroai-core = { path = "../iroai-core" }
 iroai-gpu = { path = "../iroai-gpu" }
-iroai-moufu = { path = "../iroai-moufu" }
+moufu-adapter-sdk.workspace = true
+moufu-protocol.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 egui.workspace = true
 eframe.workspace = true
 rfd.workspace = true

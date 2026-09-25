@@ -5,6 +5,7 @@ pub mod canvas;
 pub mod panels;
 pub mod tablet_layout;
 pub mod theme;
+pub mod moufu_bridge;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {

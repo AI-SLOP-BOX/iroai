@@ -2,15 +2,15 @@ use eframe::egui;
 use iroai_core::{
     BackupConfig, Brush, Document, ImageIo, PhotoAdjustments, PsdHandler, RecoveryManager,
 };
-use iroai_moufu::MoufuClient;
-
 use crate::canvas::{CanvasState, CanvasWidget};
+use crate::moufu_bridge::MoufuBridge;
 use crate::panels::Panels;
 use crate::tablet_layout::TabletLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RightPanelTab {
     Layers,
+    Paths,
     Adjust,
     Brush,
     Info,
@@ -22,7 +22,7 @@ pub struct IroaiApp {
     pub canvas_state: CanvasState,
     pub brush: Brush,
     pub photo_adj: PhotoAdjustments,
-    pub moufu: MoufuClient,
+    pub moufu: MoufuBridge,
     pub recovery: RecoveryManager,
     pub is_tablet_mode: bool,
     pub status_message: String,
@@ -36,8 +36,8 @@ impl IroaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply_pro_theme(&cc.egui_ctx);
         let doc = Document::new(800, 600, "Untitled-1");
-        let mut moufu = MoufuClient::new();
-        let _ = moufu.try_connect();
+        let moufu = MoufuBridge::new();
+        moufu.register_document("iroai://document/untitled-1", &doc.title, doc.width, doc.height);
         let recovery = RecoveryManager::new(BackupConfig::default());
 
         Self {
@@ -82,10 +82,10 @@ impl eframe::App for IroaiApp {
                 if self.current_doc_mut().undo() {
                     self.show_toast("↶ Undo");
                 }
-            } else if (cmd_or_ctrl && shift && i.key_pressed(egui::Key::Z)) || (cmd_or_ctrl && i.key_pressed(egui::Key::Y)) {
-                if self.current_doc_mut().redo() {
-                    self.show_toast("↷ Redo");
-                }
+            } else if ((cmd_or_ctrl && shift && i.key_pressed(egui::Key::Z)) || (cmd_or_ctrl && i.key_pressed(egui::Key::Y)))
+                && self.current_doc_mut().redo()
+            {
+                self.show_toast("↷ Redo");
             }
 
             // Brush Size adjustments: [ and ]
@@ -99,7 +99,13 @@ impl eframe::App for IroaiApp {
 
             // Tool Switching Shortcuts (without modifiers)
             if !cmd_or_ctrl && !i.modifiers.alt {
-                if i.key_pressed(egui::Key::B) {
+                if i.key_pressed(egui::Key::P) {
+                    self.brush.tool = iroai_core::BrushTool::Pen;
+                    self.show_toast("✒ Pen Tool (P)");
+                } else if i.key_pressed(egui::Key::T) {
+                    self.brush.tool = iroai_core::BrushTool::Text;
+                    self.show_toast("🅃 Type Tool (T)");
+                } else if i.key_pressed(egui::Key::B) {
                     self.brush.tool = iroai_core::BrushTool::Brush;
                     self.show_toast("🖌 Brush Tool (B)");
                 } else if i.key_pressed(egui::Key::E) {
@@ -114,10 +120,20 @@ impl eframe::App for IroaiApp {
                 } else if i.key_pressed(egui::Key::I) {
                     self.brush.tool = iroai_core::BrushTool::Eyedropper;
                     self.show_toast("🔍 Eyedropper (I)");
+                } else if i.key_pressed(egui::Key::J) {
+                    self.brush.tool = iroai_core::BrushTool::SpotHealing;
+                    self.show_toast("🩹 Spot Healing Brush (J)");
                 } else if i.key_pressed(egui::Key::M) {
                     self.brush.tool = iroai_core::BrushTool::RectSelect;
                     self.show_toast("🔲 Rect Marquee (M)");
                 }
+            }
+
+            // Rulers Toggle: Cmd+R / Ctrl+R
+            if cmd_or_ctrl && i.key_pressed(egui::Key::R) {
+                self.canvas_state.show_rulers = !self.canvas_state.show_rulers;
+                let status = if self.canvas_state.show_rulers { "Rulers On" } else { "Rulers Off" };
+                self.show_toast(status);
             }
 
             // Free Transform: Ctrl+T / Cmd+T
@@ -247,6 +263,23 @@ impl eframe::App for IroaiApp {
                 });
 
                 ui.menu_button("Image", |ui| {
+                    ui.menu_button("Mode", |ui| {
+                        let is_rgb = self.current_doc().color_mode == iroai_core::DocumentColorMode::Rgb;
+                        let is_cmyk = self.current_doc().color_mode == iroai_core::DocumentColorMode::Cmyk;
+                        if ui.radio(is_rgb, "RGB Color (8-bit sRGB)").clicked() {
+                            self.current_doc_mut().color_mode = iroai_core::DocumentColorMode::Rgb;
+                            self.canvas_state.texture_version = 0;
+                            self.show_toast("Mode: RGB Color");
+                            ui.close_menu();
+                        }
+                        if ui.radio(is_cmyk, "CMYK Color (4-Color Offset Proofing)").clicked() {
+                            self.current_doc_mut().color_mode = iroai_core::DocumentColorMode::Cmyk;
+                            self.canvas_state.texture_version = 0;
+                            self.show_toast("Mode: CMYK Color (Commercial Offset)");
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Flip Horizontal").clicked() {
                         if let Some(layer) = self.current_doc_mut().active_layer_mut() {
                             iroai_core::Transform::flip_horizontal(&mut layer.buffer);
@@ -265,30 +298,79 @@ impl eframe::App for IroaiApp {
                         }
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui.button("Content-Aware Scale (Seam Carve 85%)").clicked() {
+                        if let Some(layer) = self.current_doc_mut().active_layer_mut() {
+                            let target_w = ((layer.buffer.width as f32) * 0.85).max(10.0) as u32;
+                            layer.buffer = iroai_core::Filters::seam_carve_resize(&layer.buffer, target_w, layer.buffer.height);
+                            self.canvas_state.texture_version = 0;
+                            self.show_toast("Content-Aware Scale Applied");
+                        }
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("Filter", |ui| {
-                    if ui.button("Gaussian Blur").clicked() {
+                    ui.label(egui::RichText::new("Blur & Sharpen").weak());
+                    if ui.button("Gaussian Blur (3px)").clicked() {
                         if let Some(layer) = self.current_doc_mut().active_layer_mut() {
                             iroai_core::Filters::apply_gaussian_blur(&mut layer.buffer, 3);
+                            self.show_toast("Gaussian Blur Applied");
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Motion Blur (45°, 8px)").clicked() {
+                        if let Some(layer) = self.current_doc_mut().active_layer_mut() {
+                            iroai_core::Filters::apply_motion_blur(&mut layer.buffer, 45.0, 8);
+                            self.show_toast("Motion Blur Applied");
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Radial Spin Blur").clicked() {
+                        let doc = self.current_doc_mut();
+                        let cx = doc.width as f32 * 0.5;
+                        let cy = doc.height as f32 * 0.5;
+                        if let Some(layer) = doc.active_layer_mut() {
+                            iroai_core::Filters::apply_radial_blur(&mut layer.buffer, cx, cy, 2.0);
+                            self.show_toast("Radial Blur Applied");
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Unsharp Mask (High Fidelity)").clicked() {
+                        if let Some(layer) = self.current_doc_mut().active_layer_mut() {
+                            iroai_core::Filters::apply_unsharp_mask(&mut layer.buffer, 2, 1.8, 2);
+                            self.show_toast("Unsharp Mask Applied");
                         }
                         ui.close_menu();
                     }
                     if ui.button("Sharpen").clicked() {
                         if let Some(layer) = self.current_doc_mut().active_layer_mut() {
                             iroai_core::Filters::apply_sharpen(&mut layer.buffer, 1.5);
+                            self.show_toast("Sharpen Applied");
+                        }
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Artistic & Stylize").weak());
+                    if ui.button("Find Edges (Sobel Contour)").clicked() {
+                        if let Some(layer) = self.current_doc_mut().active_layer_mut() {
+                            iroai_core::Filters::apply_sobel_edge(&mut layer.buffer);
+                            self.show_toast("Sobel Contour Applied");
                         }
                         ui.close_menu();
                     }
                     if ui.button("Invert").clicked() {
                         if let Some(layer) = self.current_doc_mut().active_layer_mut() {
                             iroai_core::Filters::apply_invert(&mut layer.buffer);
+                            self.show_toast("Invert Applied");
                         }
                         ui.close_menu();
                     }
                     if ui.button("Grayscale").clicked() {
                         if let Some(layer) = self.current_doc_mut().active_layer_mut() {
                             iroai_core::Filters::apply_grayscale(&mut layer.buffer);
+                            self.show_toast("Grayscale Applied");
                         }
                         ui.close_menu();
                     }
@@ -305,11 +387,117 @@ impl eframe::App for IroaiApp {
                         self.canvas_state.pan = egui::Vec2::ZERO;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    ui.menu_button("Proof Setup (CMYK Plates)", |ui| {
+                        let is_composite = self.canvas_state.preview_plate.is_none();
+                        if ui.radio(is_composite, "Full Composite (CMYK / RGB)").clicked() {
+                            self.canvas_state.preview_plate = None;
+                            self.canvas_state.texture_version = 0;
+                            ui.close_menu();
+                        }
+                        let is_c = self.canvas_state.preview_plate == Some(iroai_core::CmykPlate::Cyan);
+                        if ui.radio(is_c, "Cyan Plate (C版)").clicked() {
+                            self.canvas_state.preview_plate = Some(iroai_core::CmykPlate::Cyan);
+                            self.canvas_state.texture_version = 0;
+                            ui.close_menu();
+                        }
+                        let is_m = self.canvas_state.preview_plate == Some(iroai_core::CmykPlate::Magenta);
+                        if ui.radio(is_m, "Magenta Plate (M版)").clicked() {
+                            self.canvas_state.preview_plate = Some(iroai_core::CmykPlate::Magenta);
+                            self.canvas_state.texture_version = 0;
+                            ui.close_menu();
+                        }
+                        let is_y = self.canvas_state.preview_plate == Some(iroai_core::CmykPlate::Yellow);
+                        if ui.radio(is_y, "Yellow Plate (Y版)").clicked() {
+                            self.canvas_state.preview_plate = Some(iroai_core::CmykPlate::Yellow);
+                            self.canvas_state.texture_version = 0;
+                            ui.close_menu();
+                        }
+                        let is_k = self.canvas_state.preview_plate == Some(iroai_core::CmykPlate::KeyBlack);
+                        if ui.radio(is_k, "Black Plate (K版 / 墨版)").clicked() {
+                            self.canvas_state.preview_plate = Some(iroai_core::CmykPlate::KeyBlack);
+                            self.canvas_state.texture_version = 0;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    ui.checkbox(&mut self.canvas_state.show_rulers, "Rulers (定規: Cmd+R)");
+                    ui.checkbox(&mut self.canvas_state.show_pixel_grid, "Pixel Grid (500%+ 拡大時)");
+                    ui.menu_button("Guides (ガイド)", |ui| {
+                        if ui.button("+ Add Center Guides (中央十字ガイド)").clicked() {
+                            let (w, h) = {
+                                let doc = self.current_doc();
+                                (doc.width as f32, doc.height as f32)
+                            };
+                            self.canvas_state.horizontal_guides.push(h * 0.5);
+                            self.canvas_state.vertical_guides.push(w * 0.5);
+                            self.show_toast("Added Center Guides");
+                            ui.close_menu();
+                        }
+                        if ui.button("+ Add Rule of Thirds (3分割構図ガイド)").clicked() {
+                            let (w, h) = {
+                                let doc = self.current_doc();
+                                (doc.width as f32, doc.height as f32)
+                            };
+                            self.canvas_state.horizontal_guides.push(h / 3.0);
+                            self.canvas_state.horizontal_guides.push(h * 2.0 / 3.0);
+                            self.canvas_state.vertical_guides.push(w / 3.0);
+                            self.canvas_state.vertical_guides.push(w * 2.0 / 3.0);
+                            self.show_toast("Added Rule of Thirds Guides");
+                            ui.close_menu();
+                        }
+                        if ui.button("Clear All Guides (ガイド全消去)").clicked() {
+                            self.canvas_state.horizontal_guides.clear();
+                            self.canvas_state.vertical_guides.clear();
+                            self.show_toast("Cleared All Guides");
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
                     ui.checkbox(&mut self.is_tablet_mode, "Tablet Mode UI");
                 });
 
+                ui.menu_button("Moufu", |ui| {
+                    if ui.button("🔄 Reconnect / Check Status").clicked() {
+                        let ok = self.moufu.try_connect();
+                        self.status_message = if ok { "Connected to Moufu Hub".into() } else { "Moufu Hub not found at endpoint".into() };
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("📤 Export Document to Moufu Asset Hub").clicked() {
+                        let temp_export = std::env::temp_dir().join(format!("iroai_moufu_{}.png", self.current_doc().title));
+                        if ImageIo::export_png(self.current_doc(), &temp_export).is_ok() {
+                            self.moufu.export_asset_to("MoufuHub", "raster_image", &temp_export.to_string_lossy());
+                            self.show_toast("Exported to Moufu Ecosystem");
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("⚡ Broadcast Active Layer Sync").clicked() {
+                        let doc = self.current_doc();
+                        if let Some(layer) = doc.active_layer() {
+                            self.moufu.broadcast_layer_sync(
+                                &doc.id.0.to_string(),
+                                &layer.id.0.to_string(),
+                                layer.buffer.width,
+                                layer.buffer.height,
+                                layer.blend_mode.name(),
+                                layer.opacity,
+                                &layer.buffer.data,
+                            );
+                            self.show_toast(format!("Layer '{}' synced to Moufu", layer.name));
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("📡 Invalidate Full Render Cache").clicked() {
+                        let doc = self.current_doc();
+                        self.moufu.invalidate_render_cache(&doc.id.0.to_string(), 0, 0, doc.width, doc.height);
+                        self.show_toast("Moufu cache invalidation sent");
+                        ui.close_menu();
+                    }
+                });
+
                 ui.separator();
-                let moufu_status = if self.moufu.is_connected { "🟢 Moufu Connected" } else { "⚪ Moufu Offline" };
+                let moufu_status = if self.moufu.is_connected() { "🟢 Moufu Connected" } else { "⚪ Moufu Offline" };
                 ui.label(moufu_status);
             });
         });
@@ -371,6 +559,7 @@ impl eframe::App for IroaiApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Layers, "Layers");
+                ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Paths, "Paths");
                 ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Adjust, "Adjust");
                 ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Brush, "Brush");
                 ui.selectable_value(&mut self.right_panel_tab, RightPanelTab::Info, "Info");
@@ -382,6 +571,9 @@ impl eframe::App for IroaiApp {
                 match self.right_panel_tab {
                     RightPanelTab::Layers => {
                         Panels::render_layer_panel(ui, doc, &mut self.layer_search_query);
+                    }
+                    RightPanelTab::Paths => {
+                        Panels::render_paths_panel(ui, doc, &mut self.canvas_state, &self.brush);
                     }
                     RightPanelTab::Adjust => {
                         Panels::render_photo_settings(ui, &mut self.photo_adj, doc);

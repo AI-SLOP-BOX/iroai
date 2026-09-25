@@ -26,11 +26,12 @@ impl TilePyramid {
                     let sx = x * 2;
                     let sy = y * 2;
 
-                    // 2x2 平均ボックスフィルタ
-                    let mut sum_r = 0u32;
-                    let mut sum_g = 0u32;
-                    let mut sum_b = 0u32;
-                    let mut sum_a = 0u32;
+                    // 2x2 アルファ加重平均ボックスフィルタ (透明境界の黒ずみフリンジを防止)
+                    let mut sum_r = 0.0f32;
+                    let mut sum_g = 0.0f32;
+                    let mut sum_b = 0.0f32;
+                    let mut sum_a = 0.0f32;
+                    let mut total_alpha_weight = 0.0f32;
                     let mut count = 0u32;
 
                     for dy in 0..2 {
@@ -38,25 +39,33 @@ impl TilePyramid {
                             let px = (sx + dx).min(current.width - 1);
                             let py = (sy + dy).min(current.height - 1);
                             if let Some(col) = current.get_pixel(px, py) {
-                                sum_r += col.r as u32;
-                                sum_g += col.g as u32;
-                                sum_b += col.b as u32;
-                                sum_a += col.a as u32;
+                                let a = col.a as f32 / 255.0;
+                                sum_r += col.r as f32 * a;
+                                sum_g += col.g as f32 * a;
+                                sum_b += col.b as f32 * a;
+                                sum_a += col.a as f32;
+                                total_alpha_weight += a;
                                 count += 1;
                             }
                         }
                     }
 
                     if count > 0 {
+                        let avg_a = (sum_a / count as f32).round() as u8;
+                        let (out_r, out_g, out_b) = if total_alpha_weight > 0.001 {
+                            (
+                                (sum_r / total_alpha_weight).clamp(0.0, 255.0).round() as u8,
+                                (sum_g / total_alpha_weight).clamp(0.0, 255.0).round() as u8,
+                                (sum_b / total_alpha_weight).clamp(0.0, 255.0).round() as u8,
+                            )
+                        } else {
+                            (0, 0, 0)
+                        };
+
                         downscaled.set_pixel(
                             x,
                             y,
-                            crate::color::Color::rgba(
-                                (sum_r / count) as u8,
-                                (sum_g / count) as u8,
-                                (sum_b / count) as u8,
-                                (sum_a / count) as u8,
-                            ),
+                            crate::color::Color::rgba(out_r, out_g, out_b, avg_a),
                         );
                     }
                 }

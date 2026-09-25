@@ -1,7 +1,4 @@
-use iroai_core::{
-    AdjustmentKind, BlendMode, Color, Document, ImageIo, PixelBuffer,
-    PointerEvent, SelectionMask, SelectionOp, Transform,
-};
+use iroai_core::{BlendMode, Color, Document};
 
 #[test]
 fn test_blend_mode_normal() {

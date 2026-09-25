@@ -1,9 +1,8 @@
 use iroai_core::{
     ActionCommand, ActionSequence, BatchJobConfig, BatchProcessor, ExportFormat,
-    FilterPlugin, ImageIo, PhotoAdjustments, PixelBuffer, PluginManifest,
+    FilterPlugin, ImageIo, PixelBuffer, PluginManifest,
     PluginPermission, PluginRegistry,
 };
-use std::path::PathBuf;
 
 #[test]
 fn test_action_resize_and_levels() {

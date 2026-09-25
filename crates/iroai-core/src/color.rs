@@ -101,6 +101,11 @@ pub enum BlendMode {
     Difference,
     Exclusion,
     Add,
+    LinearDodge,
+    LinearBurn,
+    VividLight,
+    PinLight,
+    HardMix,
 }
 
 impl BlendMode {
@@ -119,6 +124,11 @@ impl BlendMode {
             BlendMode::Difference,
             BlendMode::Exclusion,
             BlendMode::Add,
+            BlendMode::LinearDodge,
+            BlendMode::LinearBurn,
+            BlendMode::VividLight,
+            BlendMode::PinLight,
+            BlendMode::HardMix,
         ]
     }
 
@@ -137,6 +147,11 @@ impl BlendMode {
             BlendMode::Difference => "Difference",
             BlendMode::Exclusion => "Exclusion",
             BlendMode::Add => "Add",
+            BlendMode::LinearDodge => "Linear Dodge (Add)",
+            BlendMode::LinearBurn => "Linear Burn",
+            BlendMode::VividLight => "Vivid Light",
+            BlendMode::PinLight => "Pin Light",
+            BlendMode::HardMix => "Hard Mix",
         }
     }
 
@@ -190,7 +205,34 @@ impl BlendMode {
                 }
                 BlendMode::Difference => (b - s).abs(),
                 BlendMode::Exclusion => b + s - (2.0 * b * s) / 255.0,
-                BlendMode::Add => (b + s).min(255.0),
+                BlendMode::Add | BlendMode::LinearDodge => (b + s).min(255.0),
+                BlendMode::LinearBurn => (b + s - 255.0).max(0.0),
+                BlendMode::VividLight => {
+                    if s < 128.0 {
+                        let s2 = 2.0 * s;
+                        if s2 <= 0.0 { 0.0 } else { (255.0 - ((255.0 - b) * 255.0) / s2).max(0.0) }
+                    } else {
+                        let s2 = 2.0 * (s - 128.0);
+                        if s2 >= 255.0 { 255.0 } else { ((b * 255.0) / (255.0 - s2)).min(255.0) }
+                    }
+                }
+                BlendMode::PinLight => {
+                    if s < 128.0 {
+                        b.min(2.0 * s)
+                    } else {
+                        b.max(2.0 * (s - 128.0))
+                    }
+                }
+                BlendMode::HardMix => {
+                    let vivid = if s < 128.0 {
+                        let s2 = 2.0 * s;
+                        if s2 <= 0.0 { 0.0 } else { (255.0 - ((255.0 - b) * 255.0) / s2).max(0.0) }
+                    } else {
+                        let s2 = 2.0 * (s - 128.0);
+                        if s2 >= 255.0 { 255.0 } else { ((b * 255.0) / (255.0 - s2)).min(255.0) }
+                    };
+                    if vivid >= 128.0 { 255.0 } else { 0.0 }
+                }
             }
         };
 

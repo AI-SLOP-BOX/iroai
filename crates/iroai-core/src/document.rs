@@ -20,12 +20,19 @@ impl Default for DocumentId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DocumentColorMode {
+    Rgb,
+    Cmyk,
+}
+
 pub struct Document {
     pub id: DocumentId,
     pub title: String,
     pub width: u32,
     pub height: u32,
     pub dpi: f32,
+    pub color_mode: DocumentColorMode,
     pub layers: Vec<Layer>,
     pub active_layer_id: Option<LayerId>,
     pub selection: crate::selection::SelectionMask,
@@ -43,6 +50,7 @@ impl Document {
             width,
             height,
             dpi: 72.0,
+            color_mode: DocumentColorMode::Rgb,
             layers: vec![base_layer],
             active_layer_id: Some(base_id),
             selection: crate::selection::SelectionMask::new(width, height),
@@ -61,6 +69,7 @@ impl Document {
             width: w,
             height: h,
             dpi: 72.0,
+            color_mode: DocumentColorMode::Rgb,
             layers: vec![layer],
             active_layer_id: Some(id),
             selection: crate::selection::SelectionMask::new(w, h),
@@ -223,8 +232,24 @@ impl Document {
                 continue;
             }
 
+            // Check if this layer belongs to an invisible group parent
+            if let Some(pid) = layer.parent_id {
+                if let Some(parent) = self.layers.iter().find(|l| l.id == pid) {
+                    if !parent.visible || parent.opacity <= 0.0 {
+                        continue;
+                    }
+                }
+            }
+
             match &layer.kind {
-                crate::layer::LayerKind::Group { .. } => continue,
+                crate::layer::LayerKind::Group { .. } => {
+                    // Group folders with content in their buffer composite using group opacity & blend mode
+                    if layer.buffer.width > 0 && layer.buffer.height > 0 {
+                        // Group has rendered raster buffer
+                    } else {
+                        continue;
+                    }
+                }
                 crate::layer::LayerKind::Adjustment(adj) => {
                     let mut temp = composite_buf.clone();
                     match adj {
@@ -233,6 +258,22 @@ impl Document {
                         }
                         crate::layer::AdjustmentKind::HueSaturation { hue_shift, saturation } => {
                             crate::filter::Filters::apply_hue_saturation(&mut temp, *hue_shift, *saturation);
+                        }
+                        crate::layer::AdjustmentKind::Exposure { ev } => {
+                            crate::filter::Filters::apply_exposure(&mut temp, *ev);
+                        }
+                        crate::layer::AdjustmentKind::Levels { black_point, gamma, white_point } => {
+                            crate::photo::PhotoProcessor::apply_levels(&mut temp, *black_point, *gamma, *white_point);
+                        }
+                        crate::layer::AdjustmentKind::Curves { lut } => {
+                            if lut.len() == 256 {
+                                let mut arr = [0u8; 256];
+                                arr.copy_from_slice(lut);
+                                crate::photo::PhotoProcessor::apply_tone_curve(&mut temp, &arr);
+                            }
+                        }
+                        crate::layer::AdjustmentKind::Photo(photo_adj) => {
+                            crate::photo::PhotoProcessor::apply_photo_adjustments(&mut temp, photo_adj);
                         }
                         crate::layer::AdjustmentKind::Invert => {
                             crate::filter::Filters::apply_invert(&mut temp);
@@ -394,6 +435,9 @@ impl Document {
                 HistoryAction::LayerCreated { index, id, name, width, height, kind } => {
                     let mut layer = match kind {
                         crate::layer::LayerKind::Adjustment(adj) => Layer::new_adjustment(name, adj, width, height),
+                        crate::layer::LayerKind::Text { text, font_size, color, x, y } => {
+                            Layer::new_text(name, text, font_size, color, x, y, width, height)
+                        }
                         _ => Layer::new_empty(width, height, name),
                     };
                     layer.id = id;

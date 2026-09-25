@@ -119,6 +119,44 @@ impl Transform {
         out
     }
 
+    /// Bilinear interpolation sampling of a single coordinate
+    pub fn sample_bilinear(buffer: &PixelBuffer, fx: f32, fy: f32) -> Color {
+        let x0 = (fx.floor() as i32).clamp(0, (buffer.width - 1) as i32) as u32;
+        let y0 = (fy.floor() as i32).clamp(0, (buffer.height - 1) as i32) as u32;
+        let x1 = (x0 + 1).min(buffer.width - 1);
+        let y1 = (y0 + 1).min(buffer.height - 1);
+
+        let tx = (fx - fx.floor()).clamp(0.0, 1.0);
+        let ty = (fy - fy.floor()).clamp(0.0, 1.0);
+
+        let c00 = buffer.get_pixel(x0, y0).unwrap_or(Color::TRANSPARENT);
+        let c10 = buffer.get_pixel(x1, y0).unwrap_or(Color::TRANSPARENT);
+        let c01 = buffer.get_pixel(x0, y1).unwrap_or(Color::TRANSPARENT);
+        let c11 = buffer.get_pixel(x1, y1).unwrap_or(Color::TRANSPARENT);
+
+        let lerp = |a: u8, b: u8, t: f32| -> f32 {
+            a as f32 * (1.0 - t) + b as f32 * t
+        };
+
+        let r0 = lerp(c00.r, c10.r, tx);
+        let r1 = lerp(c01.r, c11.r, tx);
+        let r = lerp(r0 as u8, r1 as u8, ty).round() as u8;
+
+        let g0 = lerp(c00.g, c10.g, tx);
+        let g1 = lerp(c01.g, c11.g, tx);
+        let g = lerp(g0 as u8, g1 as u8, ty).round() as u8;
+
+        let b0 = lerp(c00.b, c10.b, tx);
+        let b1 = lerp(c01.b, c11.b, tx);
+        let b = lerp(b0 as u8, b1 as u8, ty).round() as u8;
+
+        let a0 = lerp(c00.a, c10.a, tx);
+        let a1 = lerp(c01.a, c11.a, tx);
+        let a = lerp(a0 as u8, a1 as u8, ty).round() as u8;
+
+        Color::rgba(r, g, b, a)
+    }
+
     pub fn resize_bilinear(buffer: &PixelBuffer, new_width: u32, new_height: u32) -> PixelBuffer {
         if new_width == 0 || new_height == 0 {
             return PixelBuffer::new(1, 1);
@@ -267,4 +305,210 @@ impl Transform {
         dst
     }
 
+    /// Photoshop-style Liquify (Forward Warp / Push)
+    /// Displaces pixels smoothly under the brush radius towards the movement vector (dx, dy).
+    pub fn apply_liquify_push(
+        buffer: &mut PixelBuffer,
+        center_x: f32,
+        center_y: f32,
+        dx: f32,
+        dy: f32,
+        radius: f32,
+        strength: f32,
+    ) {
+        if radius <= 1.0 || (dx.abs() < 1e-4 && dy.abs() < 1e-4) {
+            return;
+        }
+
+        let r2 = radius * radius;
+        let min_x = (center_x - radius).floor().max(0.0) as u32;
+        let max_x = (center_x + radius).ceil().min(buffer.width as f32 - 1.0).max(0.0) as u32;
+        let min_y = (center_y - radius).floor().max(0.0) as u32;
+        let max_y = (center_y + radius).ceil().min(buffer.height as f32 - 1.0).max(0.0) as u32;
+
+        if min_x > max_x || min_y > max_y || min_x >= buffer.width || min_y >= buffer.height {
+            return;
+        }
+
+        let src = buffer.clone();
+
+        for y in min_y..=max_y {
+            let py = y as f32;
+            let dist_y = py - center_y;
+
+            for x in min_x..=max_x {
+                let px = x as f32;
+                let dist_x = px - center_x;
+                let dist_sq = dist_x * dist_x + dist_y * dist_y;
+
+                if dist_sq < r2 {
+                    // Smooth bell-shaped falloff (1 - (d/r)^2)^2
+                    let factor = (1.0 - dist_sq / r2).powi(2) * strength.clamp(0.0, 1.0);
+                    let sx = px - dx * factor;
+                    let sy = py - dy * factor;
+
+                    let sample_col = Self::sample_bilinear(&src, sx, sy);
+                    buffer.set_pixel(x, y, sample_col);
+                }
+            }
+        }
+    }
+
+    /// Photoshop-style Liquify Expand / Bloat
+    pub fn apply_liquify_bloat(
+        buffer: &mut PixelBuffer,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        strength: f32,
+    ) {
+        if radius <= 1.0 || strength.abs() < 1e-4 {
+            return;
+        }
+        let r2 = radius * radius;
+        let min_x = (center_x - radius).floor().max(0.0) as u32;
+        let max_x = (center_x + radius).ceil().min(buffer.width as f32 - 1.0).max(0.0) as u32;
+        let min_y = (center_y - radius).floor().max(0.0) as u32;
+        let max_y = (center_y + radius).ceil().min(buffer.height as f32 - 1.0).max(0.0) as u32;
+
+        if min_x > max_x || min_y > max_y || min_x >= buffer.width || min_y >= buffer.height {
+            return;
+        }
+
+        let src = buffer.clone();
+
+        for y in min_y..=max_y {
+            let py = y as f32;
+            let dist_y = py - center_y;
+
+            for x in min_x..=max_x {
+                let px = x as f32;
+                let dist_x = px - center_x;
+                let dist_sq = dist_x * dist_x + dist_y * dist_y;
+
+                if dist_sq < r2 {
+                    let d = dist_sq.sqrt();
+                    let norm_d = d / radius;
+                    let factor = (1.0 - norm_d).powi(2) * strength.clamp(-1.0, 1.0);
+
+                    // Pull inward or push outward
+                    let scale = 1.0 - factor * 0.4;
+                    let sx = center_x + dist_x * scale;
+                    let sy = center_y + dist_y * scale;
+
+                    let sample_col = Self::sample_bilinear(&src, sx, sy);
+                    buffer.set_pixel(x, y, sample_col);
+                }
+            }
+        }
+    }
+
+    /// Photoshop-style 4-corner Perspective / Free Distort transformation.
+    /// Maps a rectangular buffer to an arbitrary destination quadrilateral specified by
+    /// 4 corner points: [top-left, top-right, bottom-right, bottom-left].
+    /// Uses inverse projective homography mapping with high-precision bicubic sampling.
+    pub fn transform_perspective_quad(
+        src: &PixelBuffer,
+        dst_w: u32,
+        dst_h: u32,
+        quad: [(f32, f32); 4], // [tl, tr, br, bl]
+    ) -> PixelBuffer {
+        let mut dst = PixelBuffer::new(dst_w, dst_h);
+        let (w, h) = (src.width as f32, src.height as f32);
+
+        // Source rectangle corners: (0,0), (w,0), (w,h), (0,h)
+        // Quad destination corners: p0, p1, p2, p3
+        // Compute homography matrix H that maps quad (dst) -> rect (src)
+        if let Some(h_inv) = Self::compute_homography_inverse(quad, [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]) {
+            for y in 0..dst_h {
+                let dy = y as f32 + 0.5;
+                for x in 0..dst_w {
+                    let dx = x as f32 + 0.5;
+
+                    // Project (dx, dy) back to source buffer space
+                    let denom = h_inv[6] * dx + h_inv[7] * dy + h_inv[8];
+                    if denom.abs() < 1e-7 {
+                        continue;
+                    }
+                    let inv_denom = 1.0 / denom;
+                    let sx = (h_inv[0] * dx + h_inv[1] * dy + h_inv[2]) * inv_denom;
+                    let sy = (h_inv[3] * dx + h_inv[4] * dy + h_inv[5]) * inv_denom;
+
+                    if sx >= 0.0 && sx < w && sy >= 0.0 && sy < h {
+                        let col = Self::sample_bicubic(src, sx, sy);
+                        if col.a > 0 {
+                            dst.set_pixel(x, y, col);
+                        }
+                    }
+                }
+            }
+        }
+        dst
+    }
+
+    /// Computes the 3x3 homography matrix mapping quad 1 -> quad 2 using Gaussian elimination
+    fn compute_homography_inverse(src_pts: [(f32, f32); 4], dst_pts: [(f32, f32); 4]) -> Option<[f32; 9]> {
+        let mut a = [[0.0f32; 9]; 8];
+
+        for i in 0..4 {
+            let (x, y) = src_pts[i];
+            let (u, v) = dst_pts[i];
+
+            a[i * 2][0] = x;
+            a[i * 2][1] = y;
+            a[i * 2][2] = 1.0;
+            a[i * 2][3] = 0.0;
+            a[i * 2][4] = 0.0;
+            a[i * 2][5] = 0.0;
+            a[i * 2][6] = -x * u;
+            a[i * 2][7] = -y * u;
+            a[i * 2][8] = u;
+
+            a[i * 2 + 1][0] = 0.0;
+            a[i * 2 + 1][1] = 0.0;
+            a[i * 2 + 1][2] = 0.0;
+            a[i * 2 + 1][3] = x;
+            a[i * 2 + 1][4] = y;
+            a[i * 2 + 1][5] = 1.0;
+            a[i * 2 + 1][6] = -x * v;
+            a[i * 2 + 1][7] = -y * v;
+            a[i * 2 + 1][8] = v;
+        }
+
+        // Gaussian elimination with partial pivoting (solve for h0..h7 with h8 = 1)
+        for i in 0..8 {
+            let mut max_row = i;
+            let mut max_val = a[i][i].abs();
+            for k in (i + 1)..8 {
+                if a[k][i].abs() > max_val {
+                    max_val = a[k][i].abs();
+                    max_row = k;
+                }
+            }
+            if max_val < 1e-7 {
+                return None;
+            }
+            a.swap(i, max_row);
+
+            let pivot = a[i][i];
+            for j in i..=8 {
+                a[i][j] /= pivot;
+            }
+            for k in 0..8 {
+                if k != i {
+                    let factor = a[k][i];
+                    for j in i..=8 {
+                        a[k][j] -= factor * a[i][j];
+                    }
+                }
+            }
+        }
+
+        Some([
+            a[0][8], a[1][8], a[2][8],
+            a[3][8], a[4][8], a[5][8],
+            a[6][8], a[7][8], 1.0,
+        ])
+    }
 }
+

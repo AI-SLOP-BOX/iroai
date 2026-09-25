@@ -2,6 +2,12 @@ use iroai_core::buffer::PixelBuffer;
 
 pub struct GpuRenderer;
 
+impl Default for GpuRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GpuRenderer {
     pub fn new() -> Self {
         Self

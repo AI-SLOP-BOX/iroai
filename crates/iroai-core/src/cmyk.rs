@@ -66,6 +66,14 @@ impl ColorCmyk {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmykPlate {
+    Cyan,
+    Magenta,
+    Yellow,
+    KeyBlack,
+}
+
 /// 印刷校正・分版マネージャー
 pub struct CmykManager;
 
@@ -85,5 +93,48 @@ impl CmykManager {
             }
         }
         overrun
+    }
+
+    /// 単一版（C版・M版・Y版・K版）の抽出・プレビューバッファの生成 (高速リニア走査)
+    pub fn extract_plate(buffer: &crate::buffer::PixelBuffer, plate: CmykPlate) -> crate::buffer::PixelBuffer {
+        let mut plate_buf = crate::buffer::PixelBuffer::new(buffer.width, buffer.height);
+        for (src_chunk, dst_chunk) in buffer.data.chunks_exact(4).zip(plate_buf.data.chunks_exact_mut(4)) {
+            let a = src_chunk[3];
+            if a == 0 {
+                dst_chunk[0] = 255;
+                dst_chunk[1] = 255;
+                dst_chunk[2] = 255;
+                dst_chunk[3] = 0;
+                continue;
+            }
+
+            let col = Color::rgba(src_chunk[0], src_chunk[1], src_chunk[2], a);
+            let cmyk = ColorCmyk::from_rgb(col);
+            let val = match plate {
+                CmykPlate::Cyan => (cmyk.c * 255.0).round() as u8,
+                CmykPlate::Magenta => (cmyk.m * 255.0).round() as u8,
+                CmykPlate::Yellow => (cmyk.y * 255.0).round() as u8,
+                CmykPlate::KeyBlack => (cmyk.k * 255.0).round() as u8,
+            };
+            // 印刷製版フィルム表現（白地に黒インキ濃度: アルファ考慮）
+            let effective_val = ((val as f32) * (a as f32 / 255.0)).round() as u8;
+            let density = 255 - effective_val;
+            dst_chunk[0] = density;
+            dst_chunk[1] = density;
+            dst_chunk[2] = density;
+            dst_chunk[3] = a;
+        }
+        plate_buf
+    }
+
+    /// CMYKネイティブ色空間上での直接ブレンド（減法混色: Subtractive Ink Compositing）
+    pub fn blend_cmyk_subtractive(base: ColorCmyk, overlay: ColorCmyk, opacity: f32) -> ColorCmyk {
+        let op = opacity.clamp(0.0, 1.0);
+        ColorCmyk {
+            c: (base.c + overlay.c * op).clamp(0.0, 1.0),
+            m: (base.m + overlay.m * op).clamp(0.0, 1.0),
+            y: (base.y + overlay.y * op).clamp(0.0, 1.0),
+            k: (base.k + overlay.k * op).clamp(0.0, 1.0),
+        }
     }
 }

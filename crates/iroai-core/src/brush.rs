@@ -19,6 +19,10 @@ pub enum BrushTool {
     Burn,
     Sponge,
     Pen,
+    Text,
+    LiquifyPush,
+    LiquifyBloat,
+    SpotHealing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,6 +104,15 @@ impl Default for Brush {
 
 impl Brush {
     pub fn paint_pointer_stamp(&self, buffer: &mut PixelBuffer, event: &PointerEvent) {
+        self.paint_pointer_stamp_masked(buffer, event, None);
+    }
+
+    pub fn paint_pointer_stamp_masked(
+        &self,
+        buffer: &mut PixelBuffer,
+        event: &PointerEvent,
+        stencil_mask: Option<&crate::selection::SelectionMask>,
+    ) {
         let size_multiplier = if self.pressure_size {
             0.1 + 0.9 * event.pressure
         } else {
@@ -125,6 +138,8 @@ impl Brush {
         let min_y = (cy - radius).max(0.0) as u32;
         let max_y = (cy + radius + 1.0).min(buffer.height as f32) as u32;
 
+        let stencil_active = stencil_mask.map(|m| !m.is_empty()).unwrap_or(false);
+
         for py in min_y..max_y {
             let dy = py as f32 + 0.5 - cy;
             let dy2 = dy * dy;
@@ -137,6 +152,16 @@ impl Brush {
                     continue;
                 }
 
+                let stencil_factor = if stencil_active {
+                    let v = stencil_mask.unwrap().get_value(px, py);
+                    if v == 0 {
+                        continue;
+                    }
+                    v as f32 / 255.0
+                } else {
+                    1.0
+                };
+
                 let alpha_factor = if d2 <= inner_r2 {
                     1.0
                 } else {
@@ -144,7 +169,7 @@ impl Brush {
                     ((radius - d) / (radius - inner_radius).max(0.001)).clamp(0.0, 1.0)
                 };
 
-                let effective_alpha = (self.opacity * opacity_multiplier).clamp(0.0, 1.0) * alpha_factor;
+                let effective_alpha = (self.opacity * opacity_multiplier).clamp(0.0, 1.0) * alpha_factor * stencil_factor;
                 if effective_alpha <= 0.0 {
                     continue;
                 }
@@ -156,7 +181,7 @@ impl Brush {
                 }
 
                 match event.tool {
-                    BrushTool::Brush => {
+                    BrushTool::Brush | BrushTool::Pen => {
                         let stamp_alpha = if self.lock_alpha {
                             let max_a = cur_color.a as f32;
                             (self.color.a as f32 * effective_alpha).min(max_a)
@@ -265,6 +290,18 @@ impl Brush {
     /// Paints a continuous stroke line. For semi-transparent brushes (opacity < 1.0),
     /// paints stamps with stroke-level maximum accumulation to prevent overlapping blotches.
     pub fn paint_line(&self, buffer: &mut PixelBuffer, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.paint_line_masked(buffer, x0, y0, x1, y1, None);
+    }
+
+    pub fn paint_line_masked(
+        &self,
+        buffer: &mut PixelBuffer,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        stencil_mask: Option<&crate::selection::SelectionMask>,
+    ) {
         let dx = x1 - x0;
         let dy = y1 - y0;
         let dist = (dx * dx + dy * dy).sqrt();
@@ -334,6 +371,8 @@ impl Brush {
             }
         }
 
+        let stencil_active = stencil_mask.map(|m| !m.is_empty()).unwrap_or(false);
+
         // Composite accumulated stroke mask onto layer buffer once
         for sy in min_y..max_y {
             let row_offset = (sy - min_y) * bb_w;
@@ -345,7 +384,20 @@ impl Brush {
                     continue;
                 }
 
-                let eff_alpha = (self.opacity * mask_val).clamp(0.0, 1.0);
+                let stencil_factor = if stencil_active {
+                    let v = stencil_mask.unwrap().get_value(sx as u32, sy as u32);
+                    if v == 0 {
+                        continue;
+                    }
+                    v as f32 / 255.0
+                } else {
+                    1.0
+                };
+
+                let eff_alpha = (self.opacity * mask_val * stencil_factor).clamp(0.0, 1.0);
+                if eff_alpha <= 0.0 {
+                    continue;
+                }
                 let p_idx = buf_row_start + sx * 4;
                 let cur_color = Color::rgba(
                     buffer.data[p_idx],
@@ -359,7 +411,7 @@ impl Brush {
                 }
 
                 match self.tool {
-                    BrushTool::Brush => {
+                    BrushTool::Brush | BrushTool::Pen => {
                         let stamp_alpha = if self.lock_alpha {
                             let max_a = cur_color.a as f32;
                             (self.color.a as f32 * eff_alpha).min(max_a)

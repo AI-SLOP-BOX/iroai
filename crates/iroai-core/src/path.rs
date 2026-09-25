@@ -65,4 +65,69 @@ impl VectorPath {
         }
         mask
     }
+
+    /// Stroke the vector path onto a PixelBuffer with Bezier curve interpolation
+    pub fn rasterize_stroke(
+        &self,
+        buffer: &mut crate::buffer::PixelBuffer,
+        color: crate::color::Color,
+        stroke_width: f32,
+    ) {
+        let half_w = (stroke_width * 0.5).max(0.5);
+        for subpath in &self.subpaths {
+            if subpath.points.is_empty() {
+                continue;
+            }
+            let count = subpath.points.len();
+            let limit = if subpath.closed { count } else { count.saturating_sub(1) };
+
+            for i in 0..limit {
+                let p_start = &subpath.points[i];
+                let p_end = &subpath.points[(i + 1) % count];
+                let samples = crate::bezier::BezierEngine::sample_curve(p_start, p_end, 32);
+
+                for pair in samples.windows(2) {
+                    let (x0, y0) = pair[0];
+                    let (x1, y1) = pair[1];
+                    let steps = ((x1 - x0).hypot(y1 - y0).ceil() as usize).max(1);
+
+                    for s in 0..=steps {
+                        let t = s as f32 / steps as f32;
+                        let cx = x0 + t * (x1 - x0);
+                        let cy = y0 + t * (y1 - y0);
+
+                        let min_x = (cx - half_w).max(0.0) as i32;
+                        let max_x = (cx + half_w).min(buffer.width as f32 - 1.0) as i32;
+                        let min_y = (cy - half_w).max(0.0) as i32;
+                        let max_y = (cy + half_w).min(buffer.height as f32 - 1.0) as i32;
+
+                        for py in min_y..=max_y {
+                            for px in min_x..=max_x {
+                                let d = (px as f32 - cx).hypot(py as f32 - cy);
+                                if d <= half_w {
+                                    buffer.set_pixel(px as u32, py as u32, color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fill the closed vector path onto a PixelBuffer
+    pub fn rasterize_fill(
+        &self,
+        buffer: &mut crate::buffer::PixelBuffer,
+        color: crate::color::Color,
+    ) {
+        let mask = self.to_selection_mask(buffer.width, buffer.height);
+        for y in 0..buffer.height {
+            for x in 0..buffer.width {
+                if mask.is_selected(x, y) {
+                    buffer.set_pixel(x, y, color);
+                }
+            }
+        }
+    }
 }
